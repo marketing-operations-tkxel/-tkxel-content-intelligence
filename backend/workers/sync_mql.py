@@ -10,6 +10,7 @@ Cron: 06:00 UTC daily (after inbound, so new leads get matched).
 """
 import json
 import os
+import re
 import sys
 import pathlib
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from db.connection import get_cursor, mark_sync      # noqa: E402
 
 SHEET_ID = os.environ.get("MQL_SHEET_ID", "")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def sheets_service():
@@ -86,10 +88,16 @@ def run():
         def cell(idx):
             return row[idx].strip() if idx is not None and idx < len(row) and row[idx] else None
 
-        email = cell(i_email)
-        if not email or "@" not in email:
+        # The sheet's "email" column may hold messy text (e.g. a pasted Pardot
+        # subject "... contact us - person@co.com"), not a clean address.
+        # Extract the actual email so it matches the clean inbound_leads emails.
+        raw_email = cell(i_email)
+        if not raw_email:
             continue
-        email = email.lower()
+        found = EMAIL_RE.findall(raw_email)
+        if not found:
+            continue
+        email = found[-1].lower()
 
         with get_cursor(dict_rows=False) as cur:
             cur.execute("SELECT 1 FROM inbound_leads WHERE email = %s LIMIT 1", (email,))
