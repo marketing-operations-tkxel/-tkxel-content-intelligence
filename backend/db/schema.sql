@@ -119,6 +119,16 @@ CREATE TABLE IF NOT EXISTS mql_records (
     raw           JSONB
 );
 
+-- ---------------------------------------------------------------------------
+-- Rich dashboard cache: the sync_dashboard worker computes every breakdown the
+-- frontend needs and stores it as one JSON blob under section='all'.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dashboard_cache (
+    section     TEXT PRIMARY KEY,
+    payload     JSONB NOT NULL,
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_inbound_received ON inbound_leads (received_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_segment  ON inbound_leads (segment);
 CREATE INDEX IF NOT EXISTS idx_regional_month   ON regional_traffic (month);

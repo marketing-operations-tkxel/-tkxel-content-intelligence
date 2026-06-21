@@ -71,11 +71,24 @@ def sync(background_tasks: BackgroundTasks):
     """Trigger a manual full sync in the background (runs all three workers)."""
     def _run():
         base = pathlib.Path(__file__).resolve().parent.parent
-        for w in ("sync_traffic", "sync_inbound", "sync_mql"):
+        # inbound + mql first so the dashboard worker sees fresh lead/MQL data
+        for w in ("sync_traffic", "sync_inbound", "sync_mql", "sync_dashboard"):
             subprocess.run([sys.executable, "-m", f"workers.{w}"], cwd=base, check=False)
 
     background_tasks.add_task(_run)
-    return {"status": "started", "workers": ["traffic", "inbound", "mql"]}
+    return {"status": "started", "workers": ["traffic", "inbound", "mql", "dashboard"]}
+
+
+@app.get("/api/v2/all")
+def dashboard_all():
+    """The full rich-dashboard payload, precomputed by sync_dashboard."""
+    rows = _q("SELECT payload, to_char(updated_at,'DD Mon YYYY, HH24:MI') AS updated FROM dashboard_cache WHERE section='all'")
+    if not rows:
+        return {"ready": False}
+    payload = rows[0]["payload"]
+    payload["_updated"] = rows[0]["updated"]
+    payload["ready"] = True
+    return payload
 
 
 @app.get("/api/regional")
