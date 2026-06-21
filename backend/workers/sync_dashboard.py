@@ -179,13 +179,13 @@ def toppages_section(client):
             "pos": round(float(s["pos"]), 1) if s.get("pos") else None,
             "eng": round((int(r["eng_sess"] or 0) / int(r["sessions"]) * 100), 1) if r["sessions"] else 0,
         })
-    # keep top ~6 per category by views (across regions), cap payload
-    by_cat = {}
+    # keep top 6 per (category, region) so every region populates, not just RoW
+    seen, out = {}, []
     for r in sorted(rows, key=lambda x: -x["views"]):
-        by_cat.setdefault(r["cat"], [])
-        if len(by_cat[r["cat"]]) < 8:
-            by_cat[r["cat"]].append(r)
-    out = [r for lst in by_cat.values() for r in lst]
+        key = (r["cat"], r["region"])
+        if seen.get(key, 0) < 6:
+            seen[key] = seen.get(key, 0) + 1
+            out.append(r)
     return sorted(out, key=lambda x: -x["views"])
 
 
