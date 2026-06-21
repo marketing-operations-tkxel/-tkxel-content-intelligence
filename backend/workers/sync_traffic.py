@@ -72,7 +72,7 @@ def fetch_gsc_by_month(client):
       DATE_TRUNC(data_date, MONTH) AS month,
       SUM(impressions) AS impressions,
       SUM(clicks) AS clicks,
-      SAFE_DIVIDE(SUM(sum_position), SUM(impressions)) + 1 AS avg_position
+      SAFE_DIVIDE(SUM(sum_top_position), SUM(impressions)) + 1 AS avg_position
     FROM `{PROJECT}.{GSC_DATASET}.searchdata_site_impression`
     WHERE data_date >= '{WINDOW_START}'
     GROUP BY month
