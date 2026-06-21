@@ -1,0 +1,21 @@
+# Railway config for the API web service.
+#
+# The three cron workers are separate Railway services in the same project,
+# each pointing at this same repo/root but with a custom Start Command and a
+# Cron Schedule (set in the Railway dashboard → service → Settings):
+#
+#   sync-traffic   Start: python -m workers.sync_traffic   Cron: 0 4 * * *
+#   sync-inbound   Start: python -m workers.sync_inbound   Cron: 0 5 * * *
+#   sync-mql       Start: python -m workers.sync_mql       Cron: 0 6 * * *
+#
+# All four services share the same Postgres plugin + env vars.
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+healthcheckPath = "/health"
+healthcheckTimeout = 100
