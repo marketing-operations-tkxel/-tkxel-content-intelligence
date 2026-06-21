@@ -115,7 +115,7 @@ def fetch_gsc_urls(client):
       REGEXP_REPLACE(url, r'^https?://[^/]+', '') AS page_path,
       SUM(impressions) AS impressions,
       SUM(clicks) AS clicks,
-      SAFE_DIVIDE(SUM(sum_top_position), SUM(impressions)) + 1 AS avg_position
+      SAFE_DIVIDE(SUM(sum_position), SUM(impressions)) + 1 AS avg_position
     FROM `{PROJECT}.{GSC_DATASET}.searchdata_url_impression`
     WHERE data_date >= '{WINDOW_START}'
     GROUP BY page_path
@@ -169,7 +169,7 @@ def fetch_gap(client):
       SUM(impressions) AS impressions,
       SUM(clicks) AS clicks,
       SAFE_DIVIDE(SUM(clicks), SUM(impressions)) AS ctr,
-      SAFE_DIVIDE(SUM(sum_top_position), SUM(impressions)) + 1 AS avg_position
+      SAFE_DIVIDE(SUM(sum_position), SUM(impressions)) + 1 AS avg_position
     FROM `{PROJECT}.{GSC_DATASET}.searchdata_url_impression`
     WHERE data_date >= '{WINDOW_START}' AND query IS NOT NULL AND query != ''
     GROUP BY query
