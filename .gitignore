@@ -16,6 +16,8 @@ oauth_client.json
 .env
 .env.*
 !.env.example
+# Non-secret build-time public API URL (Vite bakes it into the static bundle)
+!frontend/.env.production
 
 # OS
 .DS_Store
