@@ -49,6 +49,27 @@ GSC_URL = f"""
   WHERE data_date >= '{WINDOW_START}'
 """
 
+# Same as GSC_URL but carries the month label so sections can be date-sliced.
+GSC_URL_M = f"""
+  SELECT {GSC_REGION_CASE} AS region,
+    FORMAT_DATE('%b', data_date) AS mon,
+    REGEXP_REPLACE(REGEXP_REPLACE(url, r'^https?://[^/]+', ''), r'[?#].*$', '') AS p,
+    impressions, clicks, sum_position
+  FROM `{PROJECT}.{GSC_DATASET}.searchdata_url_impression`
+  WHERE data_date >= '{WINDOW_START}'
+"""
+
+
+def _months(client):
+    """Canonical ordered list of month labels present in GA4 (Jan, Feb, ...)."""
+    rows = run(client, f"""
+      SELECT DISTINCT FORMAT_DATE('%b', PARSE_DATE('%Y%m%d', event_date)) AS mon,
+             DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH) AS month
+      FROM `{PROJECT}.{GA4_DATASET}.events_*` WHERE _TABLE_SUFFIX >= '{SUFFIX}'
+      ORDER BY month
+    """)
+    return [r["mon"] for r in rows]
+
 
 def run(client, sql):
     return [dict(r) for r in client.query(sql).result()]
@@ -109,123 +130,131 @@ def traffic_sections(client):
     return region_monthly, monthly, views_by_region, mlabels
 
 
-def categories_section(client):
+def _blank(n):
+    return [{"v": 0, "s": 0, "e": 0, "im": 0, "ck": 0, "sp": 0} for _ in range(n)]
+
+
+def categories_section(client, mlabels):
+    """CATEGORIES_MONTHLY: {region: {cat: [per-month raw metrics]}} — frontend sums
+    selected months and derives ctr/pos/eng. Region 'All' is summed client-side."""
+    idx = {m: i for i, m in enumerate(mlabels)}
+    n = len(mlabels)
     ga = run(client, f"""
-      SELECT region, category,
+      SELECT region, category, mon,
         COUNTIF(event_name='page_view') AS views,
         COUNT(DISTINCT sess) AS sessions,
         COUNT(DISTINCT IF(engaged, sess, NULL)) AS eng_sess
-      FROM (SELECT region, sess, event_name, engaged, {CATEGORY_CASE} AS category FROM ({GA4_EV}))
-      GROUP BY region, category
+      FROM (SELECT region, mon, sess, event_name, engaged, {CATEGORY_CASE} AS category FROM ({GA4_EV}))
+      GROUP BY region, category, mon
     """)
     gsc = run(client, f"""
-      SELECT region, category, SUM(impressions) AS impr, SUM(clicks) AS clicks,
-        SAFE_DIVIDE(SUM(sum_position), SUM(impressions)) + 1 AS pos
-      FROM (SELECT region, {CATEGORY_CASE} AS category, impressions, clicks, sum_position FROM ({GSC_URL}))
-      GROUP BY region, category
+      SELECT region, category, mon, SUM(impressions) AS impr, SUM(clicks) AS clicks, SUM(sum_position) AS sp
+      FROM (SELECT region, mon, {CATEGORY_CASE} AS category, impressions, clicks, sum_position FROM ({GSC_URL_M}))
+      GROUP BY region, category, mon
     """)
-    gmap = {(r["region"], r["category"]): r for r in gsc}
+    out = {r: {} for r in REGIONS}
 
-    def build(region_filter):
-        agg = {}
-        for r in ga:
-            if region_filter and r["region"] != region_filter:
-                continue
-            c = agg.setdefault(r["category"], {"views": 0, "sessions": 0, "eng_sess": 0, "impr": 0, "clicks": 0, "pos_num": 0, "pos_den": 0})
-            c["views"] += int(r["views"] or 0); c["sessions"] += int(r["sessions"] or 0); c["eng_sess"] += int(r["eng_sess"] or 0)
-        for (reg, cat), s in gmap.items():
-            if region_filter and reg != region_filter:
-                continue
-            c = agg.setdefault(cat, {"views": 0, "sessions": 0, "eng_sess": 0, "impr": 0, "clicks": 0, "pos_num": 0, "pos_den": 0})
-            im = int(s["impr"] or 0)
-            c["impr"] += im; c["clicks"] += int(s["clicks"] or 0)
-            c["pos_num"] += float(s["pos"] or 0) * im; c["pos_den"] += im
-        out = []
-        for cat, c in agg.items():
-            out.append({
-                "cat": cat, "views": c["views"], "impr": c["impr"], "clicks": c["clicks"],
-                "pos": round(c["pos_num"] / c["pos_den"], 1) if c["pos_den"] else 0,
-                "eng": round(c["eng_sess"] / c["sessions"], 3) if c["sessions"] else 0,
-            })
-        return sorted(out, key=lambda x: -x["views"])
+    def slot(region, cat):
+        return out[region].setdefault(cat, _blank(n))
 
-    return {"All": build(None), **{reg: build(reg) for reg in REGIONS}}
-
-
-def toppages_section(client):
-    ga = run(client, f"""
-      SELECT region, category, url, ANY_VALUE(title) AS title,
-        COUNTIF(event_name='page_view') AS views,
-        COUNT(DISTINCT sess) AS sessions,
-        COUNT(DISTINCT IF(engaged, sess, NULL)) AS eng_sess
-      FROM (SELECT region, sess, event_name, engaged, p AS url, title, {CATEGORY_CASE} AS category FROM ({GA4_EV}) WHERE p != '' AND p != '/')
-      GROUP BY region, category, url
-    """)
-    gsc = run(client, f"""
-      SELECT region, p AS url, SUM(impressions) AS impr, SUM(clicks) AS clicks,
-        SAFE_DIVIDE(SUM(sum_position), SUM(impressions)) + 1 AS pos
-      FROM ({GSC_URL})
-      GROUP BY region, url
-    """)
-    gmap = {(r["region"], r["url"]): r for r in gsc}
-    rows = []
     for r in ga:
-        s = gmap.get((r["region"], r["url"]), {})
-        im = int(s.get("impr") or 0)
-        rows.append({
-            "cat": r["category"], "region": r["region"], "url": r["url"],
-            "views": int(r["views"] or 0), "clicks": int(s.get("clicks") or 0), "impr": im,
-            "ctr": round((int(s.get("clicks") or 0) / im * 100), 2) if im else 0,
-            "pos": round(float(s["pos"]), 1) if s.get("pos") else None,
-            "eng": round((int(r["eng_sess"] or 0) / int(r["sessions"]) * 100), 1) if r["sessions"] else 0,
-        })
-    # keep top 6 per (category, region) so every region populates, not just RoW
-    seen, out = {}, []
-    for r in sorted(rows, key=lambda x: -x["views"]):
-        key = (r["cat"], r["region"])
-        if seen.get(key, 0) < 6:
-            seen[key] = seen.get(key, 0) + 1
-            out.append(r)
-    return sorted(out, key=lambda x: -x["views"])
+        if r["region"] not in out or r["mon"] not in idx:
+            continue
+        c = slot(r["region"], r["category"])[idx[r["mon"]]]
+        c["v"] += int(r["views"] or 0); c["s"] += int(r["sessions"] or 0); c["e"] += int(r["eng_sess"] or 0)
+    for r in gsc:
+        if r["region"] not in out or r["mon"] not in idx:
+            continue
+        c = slot(r["region"], r["category"])[idx[r["mon"]]]
+        c["im"] += int(r["impr"] or 0); c["ck"] += int(r["clicks"] or 0); c["sp"] += float(r["sp"] or 0)
+    return out
 
 
-def gap_section(client):
-    rows = run(client, f"""
-      SELECT region, url, SUM(impressions) AS impr, SUM(clicks) AS clicks,
-        SAFE_DIVIDE(SUM(sum_position), SUM(impressions)) + 1 AS pos
-      FROM (SELECT region, p AS url, impressions, clicks, sum_position FROM ({GSC_URL}) WHERE p != '')
-      GROUP BY region, url
-      HAVING impr >= 400
+def toppages_section(client, mlabels):
+    """TOPPAGES_MONTHLY: [{cat, region, url, title, m:[per-month raw metrics]}]."""
+    idx = {m: i for i, m in enumerate(mlabels)}
+    n = len(mlabels)
+    ga = run(client, f"""
+      SELECT region, category, url, mon, ANY_VALUE(title) AS title,
+        COUNTIF(event_name='page_view') AS views,
+        COUNT(DISTINCT sess) AS sessions,
+        COUNT(DISTINCT IF(engaged, sess, NULL)) AS eng_sess
+      FROM (SELECT region, mon, sess, event_name, engaged, p AS url, title, {CATEGORY_CASE} AS category FROM ({GA4_EV}) WHERE p != '' AND p != '/')
+      GROUP BY region, category, url, mon
     """)
+    gsc = run(client, f"""
+      SELECT region, p AS url, mon, SUM(impressions) AS impr, SUM(clicks) AS clicks, SUM(sum_position) AS sp
+      FROM ({GSC_URL_M})
+      GROUP BY region, url, mon
+    """)
+    pages = {}
 
-    def classify(ctr, pos):
-        if pos < 4 and ctr < 2:
-            return "Top Rank / Weak CTR"
-        if 4 <= pos <= 15:
-            return "Striking Distance"
-        if 15 < pos <= 25:
-            return "Page 2-3 Push"
-        return "Deep / Low Priority"
+    def slot(region, cat, url):
+        key = (region, cat, url)
+        if key not in pages:
+            pages[key] = {"cat": cat, "region": region, "url": url, "title": None, "m": _blank(n)}
+        return pages[key]
 
-    def build(region_filter):
-        agg = {}
-        for r in rows:
-            if region_filter and r["region"] != region_filter:
+    for r in ga:
+        if r["mon"] not in idx:
+            continue
+        p = slot(r["region"], r["category"], r["url"])
+        if r.get("title"):
+            p["title"] = r["title"]
+        c = p["m"][idx[r["mon"]]]
+        c["v"] += int(r["views"] or 0); c["s"] += int(r["sessions"] or 0); c["e"] += int(r["eng_sess"] or 0)
+    # GSC has no category; attach to any matching (region,url) page rows
+    gsc_by = {}
+    for r in gsc:
+        if r["mon"] not in idx:
+            continue
+        gsc_by.setdefault((r["region"], r["url"]), []).append(r)
+    for (region, cat, url), p in pages.items():
+        for r in gsc_by.get((region, url), []):
+            c = p["m"][idx[r["mon"]]]
+            c["im"] += int(r["impr"] or 0); c["ck"] += int(r["clicks"] or 0); c["sp"] += float(r["sp"] or 0)
+    # keep top 8 per (category, region) by total views
+    rows = list(pages.values())
+    for p in rows:
+        p["_tv"] = sum(c["v"] for c in p["m"])
+    seen, out = {}, []
+    for p in sorted(rows, key=lambda x: -x["_tv"]):
+        key = (p["cat"], p["region"])
+        if seen.get(key, 0) < 8:
+            seen[key] = seen.get(key, 0) + 1
+            out.append({kk: vv for kk, vv in p.items() if kk != "_tv"})
+    return out
+
+
+def gap_section(client, mlabels):
+    """GAP_MONTHLY: {region: {url: [per-month {im,ck,sp}]}} incl 'All' (global)."""
+    idx = {m: i for i, m in enumerate(mlabels)}
+    n = len(mlabels)
+    rows = run(client, f"""
+      SELECT region, p AS url, mon, SUM(impressions) AS impr, SUM(clicks) AS clicks, SUM(sum_position) AS sp
+      FROM ({GSC_URL_M}) WHERE p != ''
+      GROUP BY region, url, mon
+    """)
+    buckets = {"All": {}, **{r: {} for r in REGIONS}}
+
+    def slot(scope, url):
+        return buckets[scope].setdefault(url, _blank(n))
+
+    for r in rows:
+        if r["mon"] not in idx:
+            continue
+        im = int(r["impr"] or 0); ck = int(r["clicks"] or 0); sp = float(r["sp"] or 0)
+        for scope in ("All", r["region"]):
+            if scope not in buckets:
                 continue
-            a = agg.setdefault(r["url"], {"impr": 0, "clicks": 0, "pos_num": 0})
-            im = int(r["impr"] or 0)
-            a["impr"] += im; a["clicks"] += int(r["clicks"] or 0); a["pos_num"] += float(r["pos"] or 0) * im
-        out = []
-        for url, a in agg.items():
-            if a["impr"] < 400:
-                continue
-            pos = a["pos_num"] / a["impr"] if a["impr"] else 0
-            ctr = (a["clicks"] / a["impr"] * 100) if a["impr"] else 0
-            out.append({"url": url, "impr": a["impr"], "ctr": round(ctr, 2), "pos": round(pos, 1),
-                        "type": classify(ctr, pos), "score": round(a["impr"] / pos) if pos else 0})
-        return sorted(out, key=lambda x: -x["score"])[:15]
-
-    return {"All": build(None), **{reg: build(reg) for reg in REGIONS}}
+            c = slot(scope, r["url"])[idx[r["mon"]]]
+            c["im"] += im; c["ck"] += ck; c["sp"] += sp
+    # cap each scope to the top ~25 urls by total impressions to bound payload
+    out = {}
+    for scope, urls in buckets.items():
+        ranked = sorted(urls.items(), key=lambda kv: -sum(c["im"] for c in kv[1]))[:25]
+        out[scope] = {u: arr for u, arr in ranked if sum(c["im"] for c in arr) >= 300}
+    return out
 
 
 def llm_sections(client):
@@ -396,6 +425,9 @@ def run_all():
             traceback.print_exc()
             return None
 
+    mlabels = safe("months", lambda: _months(client)) or []
+    out["MONTHS"] = mlabels
+
     tr = safe("traffic", lambda: traffic_sections(client))
     if tr:
         region_monthly, monthly, views_by_region, _ = tr
@@ -403,9 +435,9 @@ def run_all():
         out["MONTHLY"] = monthly
         out["VIEWS_BY_REGION"] = views_by_region
 
-    out["CATEGORIES_BY_REGION"] = safe("categories", lambda: categories_section(client)) or {}
-    out["TOPPAGES"] = safe("toppages", lambda: toppages_section(client)) or []
-    out["GAP_BY_REGION"] = safe("gap", lambda: gap_section(client)) or {}
+    out["CATEGORIES_MONTHLY"] = safe("categories", lambda: categories_section(client, mlabels)) or {}
+    out["TOPPAGES_MONTHLY"] = safe("toppages", lambda: toppages_section(client, mlabels)) or []
+    out["GAP_MONTHLY"] = safe("gap", lambda: gap_section(client, mlabels)) or {}
 
     llm = safe("llm", lambda: llm_sections(client))
     if llm:

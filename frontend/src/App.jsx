@@ -24,11 +24,27 @@ const SANS = "'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAYS_2026 = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const LLM_SRC = ["ChatGPT", "Gemini", "Claude", "Perplexity", "Copilot"];
+const REGIONS = ["USA", "MENA", "Europe", "RoW"];
 const ICONS = { Users, MousePointerClick, FileText, Target, CircleCheck, Eye, Search };
+
+const classifyGap = (ctr, pos) => pos < 4 && ctr < 2 ? "Top Rank / Weak CTR" : pos >= 4 && pos <= 15 ? "Striking Distance" : pos > 15 && pos <= 25 ? "Page 2-3 Push" : "Deep / Low Priority";
+
+/* Sum per-month raw metric arrays over the selected months (frac = {monthIdx: fraction}). */
+function aggMonths(arr, frac) {
+  const a = { v: 0, s: 0, e: 0, im: 0, ck: 0, sp: 0 };
+  if (!arr) return a;
+  for (const mi in frac) {
+    const c = arr[mi]; if (!c) continue;
+    const f = frac[mi];
+    a.v += (c.v || 0) * f; a.s += (c.s || 0) * f; a.e += (c.e || 0) * f;
+    a.im += (c.im || 0) * f; a.ck += (c.ck || 0) * f; a.sp += (c.sp || 0) * f;
+  }
+  return a;
+}
 
 /* ───────── live data (populated from /api/v2/all) ───────── */
 let MONTHLY = [], VIEWS_BY_REGION = [], REGION_MONTHLY = { USA: [], MENA: [], Europe: [], RoW: [] };
-let CATEGORIES_BY_REGION = { All: [] }, TOPPAGES = [], GAP_BY_REGION = { All: [] };
+let CATEGORIES_MONTHLY = {}, TOPPAGES_MONTHLY = [], GAP_MONTHLY = { All: {} };
 let LLM_MONTHLY_ALL = [], LLM_REGION_MONTHLY = { USA: [], MENA: [], Europe: [], RoW: [] };
 let LLM_SOURCE_BY_REGION = {}, LLM_CATEGORY_BY_REGION = { All: [] }, LLM_BY_PAGE = [];
 let LLM_LEAD_SIGNAL = { events: 0, dates: [] }, LLM_FUNNEL = { sessions: 0, convEvents: 0, signalEvents: 0 };
@@ -40,9 +56,9 @@ function applyPayload(d) {
   MONTHLY = d.MONTHLY || [];
   VIEWS_BY_REGION = d.VIEWS_BY_REGION || [];
   REGION_MONTHLY = d.REGION_MONTHLY || REGION_MONTHLY;
-  CATEGORIES_BY_REGION = d.CATEGORIES_BY_REGION || { All: [] };
-  TOPPAGES = d.TOPPAGES || [];
-  GAP_BY_REGION = d.GAP_BY_REGION || { All: [] };
+  CATEGORIES_MONTHLY = d.CATEGORIES_MONTHLY || {};
+  TOPPAGES_MONTHLY = d.TOPPAGES_MONTHLY || [];
+  GAP_MONTHLY = d.GAP_MONTHLY || { All: {} };
   LLM_MONTHLY_ALL = d.LLM_MONTHLY_ALL || [];
   LLM_REGION_MONTHLY = d.LLM_REGION_MONTHLY || LLM_REGION_MONTHLY;
   LLM_SOURCE_BY_REGION = d.LLM_SOURCE_BY_REGION || {};
@@ -242,11 +258,24 @@ function Overview({ monthly, viewsRegion, totals, range, region, regions }) {
   );
 }
 
-function Content({ region }) {
-  const CATEGORIES = CATEGORIES_BY_REGION[region] || CATEGORIES_BY_REGION.All || [];
+function Content({ region, frac }) {
+  const regs = region === "All" ? REGIONS : [region];
+  const catAgg = {};
+  regs.forEach(rg => {
+    const byCat = CATEGORIES_MONTHLY[rg] || {};
+    Object.entries(byCat).forEach(([cat, arr]) => {
+      const a = catAgg[cat] || (catAgg[cat] = { v: 0, s: 0, e: 0, im: 0, ck: 0, sp: 0 });
+      const x = aggMonths(arr, frac);
+      a.v += x.v; a.s += x.s; a.e += x.e; a.im += x.im; a.ck += x.ck; a.sp += x.sp;
+    });
+  });
+  const CATEGORIES = Object.entries(catAgg).map(([cat, a]) => ({
+    cat, views: a.v, impr: a.im, clicks: a.ck,
+    pos: a.im ? a.sp / a.im + 1 : 0, eng: a.s ? a.e / a.s : 0,
+  })).filter(c => c.views > 0 || c.impr > 0).sort((x, y) => y.views - x.views);
   const maxV = Math.max(...CATEGORIES.map(c => c.views), 1);
   return (
-    <Card title="Content categories" sub={`${region === "All" ? "Global" : region} · GA4 views + GSC search · sorted by views`} right={<FullWindow />}>
+    <Card title="Content categories" sub={`${region === "All" ? "Global" : region} · GA4 views + GSC search · sorted by views`}>
       <div style={{ display: "grid", gap: 2 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1.7fr 1fr 0.8fr 0.8fr 0.7fr 0.8fr 0.8fr", gap: 8, padding: "6px 8px", fontFamily: SANS, fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: .5 }}>
           <div>Category</div><div>Views</div><div style={{ textAlign: "right" }}>Impr.</div><div style={{ textAlign: "right" }}>Clicks</div><div style={{ textAlign: "right" }}>CTR</div><div style={{ textAlign: "right" }}>Pos</div><div style={{ textAlign: "right" }}>Engage</div>
@@ -265,12 +294,20 @@ function Content({ region }) {
   );
 }
 
-function TopPages({ region: globalRegion }) {
-  const cats = [...new Set(TOPPAGES.map(p => p.cat))]; const regionOpts = ["All", "USA", "MENA", "Europe", "RoW"];
+function TopPages({ region: globalRegion, frac }) {
+  const pages = TOPPAGES_MONTHLY.map(p => {
+    const a = aggMonths(p.m, frac);
+    return {
+      cat: p.cat, region: p.region, url: p.url,
+      views: a.v, clicks: a.ck, impr: a.im,
+      ctr: a.im ? a.ck / a.im * 100 : 0, pos: a.im ? a.sp / a.im + 1 : null, eng: a.s ? a.e / a.s * 100 : 0,
+    };
+  });
+  const cats = [...new Set(TOPPAGES_MONTHLY.map(p => p.cat))]; const regionOpts = ["All", "USA", "MENA", "Europe", "RoW"];
   const [cat, setCat] = useState(cats[0]);
   const [localRegion, setLocalRegion] = useState(globalRegion);
   const region = globalRegion === "All" ? localRegion : globalRegion;
-  const rows = TOPPAGES.filter(p => p.cat === cat && (region === "All" || p.region === region)).sort((a, b) => b.views - a.views);
+  const rows = pages.filter(p => p.cat === cat && (region === "All" || p.region === region) && p.views > 0).sort((a, b) => b.views - a.views);
   const Sel = ({ value, set, opts }) => (<select value={value} onChange={e => set(e.target.value)} style={{ fontFamily: SANS, fontSize: 12, color: C.text, background: C.card, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 10px", cursor: "pointer" }}>{opts.map(o => <option key={o} value={o}>{o}</option>)}</select>);
   return (
     <Card title="Top pages" sub={`Ranked by views · GA4 joined to GSC at URL level${globalRegion !== "All" ? ` · scoped to ${globalRegion}` : ""}`} right={<div style={{ display: "flex", gap: 8, alignItems: "center" }}><Filter size={14} color={C.muted} /><Sel value={cat} set={setCat} opts={cats} />{globalRegion === "All" && <Sel value={localRegion} set={setLocalRegion} opts={regionOpts} />}</div>}>
@@ -384,12 +421,18 @@ function LLM({ llmMonthly, llmTotals, total, region }) {
   );
 }
 
-function Opportunities({ region }) {
-  const GAP = GAP_BY_REGION[region] || GAP_BY_REGION.All || [];
+function Opportunities({ region, frac }) {
+  const bucket = GAP_MONTHLY[region] || GAP_MONTHLY.All || {};
+  const GAP = Object.entries(bucket).map(([url, arr]) => {
+    const a = aggMonths(arr, frac);
+    const pos = a.im ? a.sp / a.im + 1 : 0;
+    const ctr = a.im ? a.ck / a.im * 100 : 0;
+    return { url, impr: a.im, ctr, pos, type: classifyGap(ctr, pos), score: pos ? Math.round(a.im / pos) : 0 };
+  }).filter(g => g.impr >= 1).sort((a, b) => b.score - a.score).slice(0, 15);
   const color = (t) => t.includes("Striking") ? { c: C.sage, b: C.sageSoft } : t.includes("Weak CTR") ? { c: C.rust, b: "#F6E5E0" } : { c: C.ochre, b: "#F5ECDB" };
   const maxS = Math.max(...GAP.map(g => g.score), 1);
   return (
-    <Card title="Content gap & opportunities" sub={`GSC${region !== "All" ? ` · ${region}` : ""} · priority = impressions ÷ avg position · striking-distance = fastest wins`} right={<FullWindow />}>
+    <Card title="Content gap & opportunities" sub={`GSC${region !== "All" ? ` · ${region}` : ""} · priority = impressions ÷ avg position · striking-distance = fastest wins`}>
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: SANS, fontSize: 12.5 }}>
           <thead><tr style={{ color: C.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: .5 }}>
@@ -631,7 +674,11 @@ export default function App() {
       ? (LLM_SOURCE_BY_REGION[regKey] || [])
       : LLM_SRC.map(src => ({ src, sessions: sum(llmMonthly.map(x => x[src])) }));
     const llmTotal = sum(llmTotals.map(x => x.sessions));
-    return { monthly, viewsRegion, llmMonthly, totals, regions, llmTotals, llmTotal };
+    // fraction of each month covered by the selected range (for slicing the
+    // per-month category / top-page / gap tables)
+    const frac = {};
+    monthIdxs.forEach(mi => { frac[mi] = byMonth[mi].length / MONTH_INFO[mi].days; });
+    return { monthly, viewsRegion, llmMonthly, totals, regions, llmTotals, llmTotal, frac };
   }, [data, loIdx, hiIdx, region]);
 
   const refresh = async () => {
@@ -658,9 +705,9 @@ export default function App() {
 
   const tabProps = {
     overview: { monthly: D.monthly, viewsRegion: D.viewsRegion, totals: D.totals, range: rangeLabel, region, regions: D.regions },
-    content: { region },
-    top: { region },
-    gap: { region },
+    content: { region, frac: D.frac },
+    top: { region, frac: D.frac },
+    gap: { region, frac: D.frac },
     llm: { llmMonthly: D.llmMonthly, llmTotals: D.llmTotals, total: D.llmTotal, region },
   };
   const TABS = { overview: Overview, content: Content, top: TopPages, llm: LLM, gap: Opportunities, inbound: Inbound };
