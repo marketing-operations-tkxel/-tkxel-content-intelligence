@@ -83,6 +83,10 @@ def run():
     i_owner = col_index(header, "owner", "sdr", "rep", "assigned")
 
     data_rows = rows[hidx + 1:]
+    # Full refresh: the sheet is the source of truth, so clear first to avoid
+    # stale rows lingering when a row's email changes between runs.
+    with get_cursor(dict_rows=False) as cur:
+        cur.execute("DELETE FROM mql_records")
     written = 0
     for row in data_rows:
         def cell(idx):
