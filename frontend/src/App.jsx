@@ -5,7 +5,8 @@ import {
 } from "recharts";
 import {
   LayoutDashboard, Globe2, FileText, ListOrdered, Sparkles, Target,
-  RefreshCw, Users, MousePointerClick, Search, Filter, CircleCheck, Eye, Calendar, ArrowRight
+  RefreshCw, Users, MousePointerClick, Search, Filter, CircleCheck, Eye, Calendar, ArrowRight,
+  Gauge, TrendingUp, Wrench
 } from "lucide-react";
 
 /* ───────── live data source ───────── */
@@ -50,6 +51,7 @@ let LLM_SOURCE_BY_REGION = {}, LLM_CATEGORY_BY_REGION = { All: [] }, LLM_BY_PAGE
 let LLM_LEAD_SIGNAL = { events: 0, dates: [] }, LLM_FUNNEL = { sessions: 0, convEvents: 0, signalEvents: 0 };
 let FUNNEL = [], GENUINE_BY_TYPE = [], LEAD_PAGES = [], INBOUND_SEGMENTS = [];
 let INBOUND_TOTALS = { submissions: 0, genuine: 0, mqls: 0, converted: 0 };
+let VELOCITY = {};
 let MONTH_INFO = [], DAILY = [], DATE_MIN = "2026-01-01", DATE_MAX = "2026-06-30";
 
 function applyPayload(d) {
@@ -71,6 +73,7 @@ function applyPayload(d) {
   GENUINE_BY_TYPE = d.GENUINE_BY_TYPE || [];
   LEAD_PAGES = d.LEAD_PAGES || [];
   INBOUND_SEGMENTS = d.INBOUND_SEGMENTS || [];
+  VELOCITY = d.VELOCITY || {};
   const fmap = Object.fromEntries((d.FUNNEL || []).map(f => [f.label, f.value]));
   INBOUND_TOTALS = {
     submissions: fmap["Pardot Submissions"] || 0, genuine: fmap["Genuine Leads"] || 0,
@@ -572,6 +575,167 @@ function Inbound() {
   );
 }
 
+function Velocity() {
+  const V = VELOCITY || {};
+  const [targetPct, setTargetPct] = useState(20);
+  const [optsPerMo, setOptsPerMo] = useState(6);
+  const [capture, setCapture] = useState(25);
+  const [artsPerMo, setArtsPerMo] = useState(5);
+  const [a, setA] = useState(V.a_mean || 3.9);
+  if (!V.baseline) return <Card title="Content Performance & Velocity"><div style={{ color: C.muted, fontFamily: SANS, fontSize: 13 }}>Velocity inputs not computed yet — run Refresh.</div></Card>;
+
+  const B = V.baseline;
+  const dS = Math.round(B * targetPct / 100);
+  const optsQ = optsPerMo * 3;
+  const acts = V.actions || [];
+  const cumTop = acts.slice(0, optsQ).reduce((s, x) => s + x.uplift, 0);
+  const engineApot = optsQ <= acts.length ? cumTop : (V.engineA_top20 || cumTop);
+  const engineA = Math.round(engineApot * capture / 100);
+  const gap = dS - engineA;
+  const N = Math.max(0, Math.ceil(gap / (a || 1)));
+  const engineB_nextQ = Math.round(artsPerMo * 3 * a);
+  const onlyContentN = Math.ceil(dS / (a || 1));
+
+  const latest = ((V.organic_monthly || []).slice(-1)[0] || {}).organic || B;
+  const pace = engineA >= dS
+    ? { label: "On track — optimization covers the target", c: C.sage, b: C.sageSoft }
+    : N <= artsPerMo * 3
+      ? { label: "On track with the planned content + optimization mix", c: C.ochre, b: "#F5ECDB" }
+      : { label: `Behind — gap needs ${N} articles vs ${artsPerMo * 3} planned`, c: C.rust, b: "#F6E5E0" };
+
+  const forecast = [
+    { label: "Baseline", actual: B, plan: B },
+    { label: "Month 1", plan: Math.round(B * 1.04) },
+    { label: "Q3 target", plan: B + dS },
+    { label: "Q4 matured", plan: Math.round(B + dS + engineB_nextQ) },
+  ];
+  const trend = (V.organic_monthly || []).map(x => ({ label: x.m, actual: x.organic }));
+
+  const dLeadsTraffic = (dS * (V.conversion_rate || 0));
+  const dLeadsCro = (B * 0.002); // +0.2pp CR illustrative
+
+  const Inp = ({ label, value, set, min, max, step = 1, suffix }) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontFamily: SANS, fontSize: 11, color: C.muted }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input type="range" min={min} max={max} step={step} value={value} onChange={e => set(parseFloat(e.target.value))} style={{ flex: 1, accentColor: C.sage }} />
+        <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 600, width: 52, textAlign: "right" }}>{value}{suffix || ""}</span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <span style={{ fontFamily: SANS, fontSize: 11, color: C.sage, border: `1px solid #CFE0D7`, background: C.sageSoft, borderRadius: 5, padding: "2px 7px" }}>organic sessions · model from live GA4 + GSC</span>
+        <span style={{ fontFamily: SANS, fontSize: 11, color: C.faint }}>adjust the inputs — the required velocity recomputes live</span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
+        <Kpi label="Baseline / mo" value={B} Icon={Gauge} note="organic, Q2 avg" />
+        <Kpi label={`Q3 target (+${targetPct}%)`} value={B + dS} accent={C.slate} Icon={Target} note={`ΔS = +${nf(dS)}/mo`} />
+        <Kpi label="New articles needed" value={N} accent={N === 0 ? C.sage : C.ochre} Icon={FileText} note={N === 0 ? "optimization covers it" : "to close the gap"} />
+        <Kpi label="Optimization inventory" value={V.inventory} accent={C.sage} Icon={Wrench} note={`${nf(V.inventory_uplift)}/mo if all fixed`} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 16 }} className="grid-2">
+        <Card title="Model inputs" sub="your levers">
+          <div style={{ display: "grid", gap: 14, marginTop: 4 }}>
+            <Inp label="Quarter target (QoQ %)" value={targetPct} set={setTargetPct} min={5} max={60} suffix="%" />
+            <Inp label="Optimizations / month (O)" value={optsPerMo} set={setOptsPerMo} min={0} max={20} />
+            <Inp label="Optimization capture rate" value={capture} set={setCapture} min={10} max={80} step={5} suffix="%" />
+            <Inp label="New articles / month" value={artsPerMo} set={setArtsPerMo} min={0} max={20} />
+            <Inp label="Sessions / matured article (a)" value={a} set={setA} min={1} max={20} step={0.5} />
+            <div style={{ fontFamily: SANS, fontSize: 10.5, color: C.faint }}>Real `a`: {V.a_median} median · {V.a_mean} mean ({V.a_articles} articles)</div>
+          </div>
+        </Card>
+        <Card title="Forecast vs actual" sub={`staged · baseline ${nf(B)} organic/mo`}>
+          <div style={{ height: 250 }}>
+            <ResponsiveContainer>
+              <LineChart data={[...trend, ...forecast.slice(1)]} margin={{ left: -10, right: 8, top: 8 }}>
+                <CartesianGrid stroke={C.border} vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 10, fill: C.muted, fontFamily: MONO }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: C.faint, fontFamily: MONO }} axisLine={false} tickLine={false} tickFormatter={k} />
+                <Tooltip content={<ChartTip />} />
+                <Line type="monotone" dataKey="actual" name="Actual organic" stroke={C.sage} strokeWidth={2} dot={{ r: 2 }} connectNulls />
+                <Line type="monotone" dataKey="plan" name="Staged plan" stroke={C.slate} strokeWidth={2} strokeDasharray="5 4" dot={{ r: 3 }} connectNulls />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", background: pace.b, border: `1px solid ${pace.c}33`, borderRadius: 10, padding: "12px 16px" }}>
+        <TrendingUp size={16} color={pace.c} />
+        <div style={{ fontFamily: SANS, fontSize: 12.5, color: pace.c, fontWeight: 600 }}>{pace.label}</div>
+      </div>
+
+      <Card title="The velocity math" sub="N = ( ΔS − O×u ) ÷ a — required publishing velocity for the target">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 14 }}>
+          {[
+            ["Required lift (ΔS)", `+${nf(dS)}/mo`, `${targetPct}% of ${nf(B)}`, C.slate],
+            ["Engine A — optimization", `+${nf(engineA)}/mo`, `top ${optsQ} fixes × ${capture}% capture`, C.sage],
+            ["Gap to fund with content", gap > 0 ? `+${nf(gap)}/mo` : "covered", gap > 0 ? "→ new articles" : "Engine A over-delivers", gap > 0 ? C.ochre : C.sage],
+            ["New articles needed (N)", `${N}`, `at ${a} sessions/article`, N === 0 ? C.sage : C.ochre],
+          ].map(([t, big, sub, col]) => (
+            <div key={t} style={{ border: `1px solid ${C.border}`, borderRadius: 9, padding: "12px 14px" }}>
+              <div style={{ fontFamily: SANS, fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: .5 }}>{t}</div>
+              <div style={{ fontFamily: MONO, fontSize: 22, fontWeight: 700, color: col, marginTop: 6 }}>{big}</div>
+              <div style={{ fontFamily: SANS, fontSize: 11, color: C.faint, marginTop: 3 }}>{sub}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontFamily: SANS, fontSize: 11.5, color: C.faint, marginTop: 12, lineHeight: 1.5 }}>
+          By contrast, hitting +{targetPct}% with <b>new content alone</b> would need <b>{nf(onlyContentN)} articles/quarter</b> (ΔS ÷ a) — which is why this baseline is <b>optimization-led</b>. The {nf(artsPerMo * 3)} articles you plan mature into <b>+{nf(engineB_nextQ)}/mo next quarter</b>, the compounding investment.
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }} className="grid-2">
+        <Card title="Leads velocity" sub="Δ Leads = (Δ Sessions × CR) + (Sessions × Δ CR)">
+          <div style={{ display: "grid", gap: 10, marginTop: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontFamily: SANS, fontSize: 12.5 }}><span>From traffic (+{nf(dS)} × {(V.conversion_rate * 100).toFixed(2)}%)</span><span style={{ fontFamily: MONO, fontWeight: 600 }}>+{dLeadsTraffic.toFixed(1)}/mo</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontFamily: SANS, fontSize: 12.5 }}><span>From CRO (+0.2pp on {nf(B)})</span><span style={{ fontFamily: MONO, fontWeight: 600, color: C.sage }}>+{dLeadsCro.toFixed(1)}/mo</span></div>
+            <div style={{ fontFamily: SANS, fontSize: 11.5, color: C.faint, marginTop: 4 }}>CRO is the faster lever — a small conversion lift multiplies across all traffic. Current baseline leads ≈ {V.leads_per_month}/mo.</div>
+          </div>
+        </Card>
+        <Card title="Why optimization-led" sub="the single highest-leverage action">
+          <div style={{ fontFamily: SANS, fontSize: 12.5, color: C.text, lineHeight: 1.6 }}>
+            The top target alone — <span style={{ fontFamily: MONO, color: C.sage }}>{acts[0]?.url}</span> — sits at position <b>{acts[0]?.pos}</b> with <b>{k(acts[0]?.monthly_impr)}</b> impressions/mo at <b>{acts[0]?.ctr}%</b> CTR. A snippet fix is worth <b>+{nf(acts[0]?.uplift)}/mo</b> — on its own, {acts[0]?.uplift >= dS ? "more than the entire quarter target" : "a major share of the target"}.
+          </div>
+        </Card>
+      </div>
+
+      <Card title="Ranked action list" sub="top optimization targets by modeled monthly organic uplift · ship top-down">
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: SANS, fontSize: 12.5 }}>
+            <thead><tr style={{ color: C.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: .5 }}>
+              {["#", "URL", "Play", "Pos", "Impr./mo", "CTR", "Uplift/mo"].map((h, i) => <th key={h} style={{ padding: "8px 9px", textAlign: i > 2 ? "right" : "left", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>)}
+            </tr></thead>
+            <tbody style={{ fontFamily: MONO }}>
+              {acts.map((p, i) => {
+                const within = i < optsQ;
+                const cl = p.play.includes("CTR") ? { c: C.rust, b: "#F6E5E0" } : p.play.includes("Striking") ? { c: C.sage, b: C.sageSoft } : { c: C.ochre, b: "#F5ECDB" };
+                return (
+                  <tr key={i} style={{ opacity: within ? 1 : 0.5 }}>
+                    <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, color: C.faint }}>{i + 1}</td>
+                    <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, maxWidth: 340, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.sage }}>{p.url}</td>
+                    <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, fontFamily: SANS }}><Pill color={cl.c} bg={cl.b}>{p.play}</Pill></td>
+                    <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right" }}>{p.pos}</td>
+                    <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: C.muted }}>{k(p.monthly_impr)}</td>
+                    <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: p.ctr < 1 ? C.rust : C.text }}>{p.ctr}%</td>
+                    <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right", fontWeight: 600, color: C.sage }}>+{nf(p.uplift)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontFamily: SANS, fontSize: 11.5, color: C.faint, marginTop: 10 }}>Highlighted rows = the top {optsQ} that fit your {optsPerMo}/mo optimization budget this quarter. Faded rows are next in line.</div>
+      </Card>
+    </div>
+  );
+}
+
 /* ───────── app ───────── */
 const NAV = [
   { id: "overview", label: "Overview", Icon: LayoutDashboard },
@@ -579,6 +743,7 @@ const NAV = [
   { id: "top", label: "Top Pages", Icon: ListOrdered },
   { id: "llm", label: "LLM Traffic", Icon: Sparkles },
   { id: "gap", label: "Opportunities", Icon: Target },
+  { id: "velocity", label: "Velocity", Icon: Gauge },
   { id: "inbound", label: "Inbound Funnel", Icon: Users },
 ];
 
@@ -710,7 +875,7 @@ export default function App() {
     gap: { region, frac: D.frac },
     llm: { llmMonthly: D.llmMonthly, llmTotals: D.llmTotals, total: D.llmTotal, region },
   };
-  const TABS = { overview: Overview, content: Content, top: TopPages, llm: LLM, gap: Opportunities, inbound: Inbound };
+  const TABS = { overview: Overview, content: Content, top: TopPages, llm: LLM, gap: Opportunities, velocity: Velocity, inbound: Inbound };
   const Active = TABS[tab];
 
   return (
