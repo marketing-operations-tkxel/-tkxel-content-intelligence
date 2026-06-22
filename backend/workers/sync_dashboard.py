@@ -346,6 +346,71 @@ def llm_sections(client):
     }, months
 
 
+# ───────────────────────── Velocity model (GA4 + GSC) ─────────────────────────
+def velocity_section(client):
+    """Real inputs for the Content Performance & Velocity model:
+    baseline organic sessions, avg organic sessions per matured article (a),
+    optimization inventory + per-page uplift, and the ranked action list."""
+    om = run(client, f"""
+      SELECT FORMAT_DATE('%b', PARSE_DATE('%Y%m%d', event_date)) AS mon,
+        MIN(PARSE_DATE('%Y%m%d', event_date)) AS ord,
+        COUNT(DISTINCT IF(LOWER(collected_traffic_source.manual_medium)='organic',
+          CONCAT(user_pseudo_id,'_',CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)), NULL)) AS organic
+      FROM `{PROJECT}.{GA4_DATASET}.events_*` WHERE _TABLE_SUFFIX >= '{SUFFIX}'
+      GROUP BY mon ORDER BY ord
+    """)
+    organic_monthly = [{"m": r["mon"], "organic": int(r["organic"] or 0)} for r in om]
+    recent = [x["organic"] for x in organic_monthly[-3:]] or [0]
+    baseline = round(sum(recent) / max(1, len(recent)))
+
+    arow = run(client, f"""
+      WITH pv AS (
+        SELECT REGEXP_REPLACE(REGEXP_REPLACE((SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_location'),r'^https?://[^/]+',''),r'[?#].*$','') AS p,
+          DATE_TRUNC(PARSE_DATE('%Y%m%d',event_date),MONTH) AS month,
+          CONCAT(user_pseudo_id,'_',CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)) AS sess
+        FROM `{PROJECT}.{GA4_DATASET}.events_*`
+        WHERE _TABLE_SUFFIX>='{SUFFIX}' AND event_name='page_view' AND LOWER(collected_traffic_source.manual_medium)='organic'
+      ),
+      blog AS (SELECT * FROM pv WHERE REGEXP_CONTAINS(p, r'^/blog/[a-z]')),
+      pam AS (SELECT p, month, COUNT(DISTINCT sess) s FROM blog GROUP BY p, month),
+      pa AS (SELECT p, AVG(s) avg_monthly FROM pam GROUP BY p HAVING SUM(s) >= 6)
+      SELECT COUNT(*) n, ROUND(APPROX_QUANTILES(avg_monthly,100)[OFFSET(50)],1) med, ROUND(AVG(avg_monthly),1) mean FROM pa
+    """)[0]
+
+    # optimization opportunity: pages below page 1 / weak CTR, monthly click uplift at 4% target CTR
+    opp = f"""
+      SELECT p, pos, m_impr, m_clicks, GREATEST(0, m_impr*0.04 - m_clicks) AS uplift,
+        CASE WHEN pos < 4 THEN 'CTR fix' WHEN pos <= 15 THEN 'Striking distance' ELSE 'Page 2-3 push' END AS play
+      FROM (
+        SELECT REGEXP_REPLACE(REGEXP_REPLACE(url,r'^https?://[^/]+',''),r'[?#].*$','') AS p,
+          SUM(impressions)/6.0 AS m_impr, SUM(clicks)/6.0 AS m_clicks,
+          SAFE_DIVIDE(SUM(sum_position),SUM(impressions))+1 AS pos
+        FROM `{PROJECT}.{GSC_DATASET}.searchdata_url_impression` WHERE data_date>='{WINDOW_START}' GROUP BY p
+      )
+      WHERE pos < 20 AND m_impr >= 100 AND (m_clicks/NULLIF(m_impr,0)) < 0.03
+    """
+    inv = run(client, f"SELECT COUNT(*) n, ROUND(SUM(uplift),0) total FROM ({opp})")[0]
+    acts = run(client, f"""
+      SELECT p AS url, ROUND(pos,1) AS pos, ROUND(m_impr,0) AS monthly_impr,
+        ROUND(m_clicks/NULLIF(m_impr,0)*100,2) AS ctr, ROUND(uplift,0) AS uplift, play
+      FROM ({opp}) ORDER BY uplift DESC LIMIT 15
+    """)
+    top10 = run(client, f"""
+      SELECT ROUND(SUM(IF(rn<=10,uplift,0)),0) t10, ROUND(SUM(IF(rn<=20,uplift,0)),0) t20
+      FROM (SELECT uplift, ROW_NUMBER() OVER (ORDER BY uplift DESC) rn FROM ({opp}))
+    """)[0]
+
+    return {
+        "baseline": baseline,
+        "organic_monthly": organic_monthly,
+        "a_median": float(arow["med"] or 0), "a_mean": float(arow["mean"] or 0), "a_articles": int(arow["n"] or 0),
+        "inventory": int(inv["n"] or 0), "inventory_uplift": float(inv["total"] or 0),
+        "engineA_top10": float(top10["t10"] or 0), "engineA_top20": float(top10["t20"] or 0),
+        "actions": [{"url": a["url"], "pos": float(a["pos"] or 0), "monthly_impr": int(a["monthly_impr"] or 0),
+                     "ctr": float(a["ctr"] or 0), "uplift": int(a["uplift"] or 0), "play": a["play"]} for a in acts],
+    }
+
+
 # ───────────────────────── Inbound (Postgres) ─────────────────────────
 TYPE_RULES = [
     ("webinar", "Webinar"), ("contact", "Contact Us"), ("white paper", "White Paper"),
@@ -469,6 +534,18 @@ def run_all():
         {"label": "MQLs", "value": inb.get("mqls", 0), "sub": "matched to SDR tracker", "icon": "Target"},
         {"label": "Converted", "value": inb.get("converted", 0), "sub": "qualified / won", "icon": "CircleCheck"},
     ]
+
+    # Velocity model inputs (real GA4/GSC + conversion/leads)
+    vel = safe("velocity", lambda: velocity_section(client))
+    if vel:
+        cr = (conv_total / sess_total) if sess_total else 0
+        # genuine leads per month over the window
+        n_months = max(1, len(out.get("MONTHLY", [])) or 1)
+        leads_pm = round(inb.get("genuine", 0) / n_months, 1)
+        vel["conversion_rate"] = round(cr, 4)
+        vel["leads_per_month"] = leads_pm
+        vel["mqls_total"] = inb.get("mqls", 0)
+        out["VELOCITY"] = vel
 
     out["asOf"] = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
     out["_errors"] = errors
