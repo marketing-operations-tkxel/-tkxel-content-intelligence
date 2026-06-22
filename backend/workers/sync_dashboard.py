@@ -347,68 +347,136 @@ def llm_sections(client):
 
 
 # ───────────────────────── Velocity model (GA4 + GSC) ─────────────────────────
-def velocity_section(client):
-    """Real inputs for the Content Performance & Velocity model:
-    baseline organic sessions, avg organic sessions per matured article (a),
-    optimization inventory + per-page uplift, and the ranked action list."""
-    om = run(client, f"""
-      SELECT FORMAT_DATE('%b', PARSE_DATE('%Y%m%d', event_date)) AS mon,
-        MIN(PARSE_DATE('%Y%m%d', event_date)) AS ord,
-        COUNT(DISTINCT IF(LOWER(collected_traffic_source.manual_medium)='organic',
-          CONCAT(user_pseudo_id,'_',CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)), NULL)) AS organic
-      FROM `{PROJECT}.{GA4_DATASET}.events_*` WHERE _TABLE_SUFFIX >= '{SUFFIX}'
-      GROUP BY mon ORDER BY ord
-    """)
-    organic_monthly = [{"m": r["mon"], "organic": int(r["organic"] or 0)} for r in om]
-    recent = [x["organic"] for x in organic_monthly[-3:]] or [0]
-    baseline = round(sum(recent) / max(1, len(recent)))
+def _median(xs):
+    s = sorted(xs)
+    n = len(s)
+    if n == 0:
+        return 0.0
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
-    arow = run(client, f"""
-      WITH pv AS (
-        SELECT REGEXP_REPLACE(REGEXP_REPLACE((SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_location'),r'^https?://[^/]+',''),r'[?#].*$','') AS p,
+
+def velocity_section(client, mlabels):
+    """Region-aware velocity inputs: VELOCITY = {All, USA, MENA, Europe, RoW}.
+    Each carries baseline organic sessions, organic_monthly, a (median/mean),
+    optimization inventory + per-page uplift, engineA cumulative, and action list."""
+    morder = {m: i for i, m in enumerate(mlabels)}
+
+    # 1. organic sessions by region x month
+    om = run(client, f"""
+      SELECT region, mon, COUNT(DISTINCT sess) AS organic FROM (
+        SELECT {GA4_REGION_CASE} AS region,
+          FORMAT_DATE('%b', PARSE_DATE('%Y%m%d', event_date)) AS mon,
+          CONCAT(user_pseudo_id,'_',CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)) AS sess
+        FROM `{PROJECT}.{GA4_DATASET}.events_*`
+        WHERE _TABLE_SUFFIX>='{SUFFIX}' AND LOWER(collected_traffic_source.manual_medium)='organic'
+      ) GROUP BY region, mon
+    """)
+    org = {r: [0] * len(mlabels) for r in REGIONS}
+    for r in om:
+        if r["region"] in org and r["mon"] in morder:
+            org[r["region"]][morder[r["mon"]]] = int(r["organic"] or 0)
+    org_all = [sum(org[rg][i] for rg in REGIONS) for i in range(len(mlabels))]
+
+    # 2. organic blog sessions by region x article x month  → a per region + All
+    am = run(client, f"""
+      SELECT region, p, month, COUNT(DISTINCT sess) AS s FROM (
+        SELECT {GA4_REGION_CASE} AS region,
+          REGEXP_REPLACE(REGEXP_REPLACE((SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_location'),r'^https?://[^/]+',''),r'[?#].*$','') AS p,
           DATE_TRUNC(PARSE_DATE('%Y%m%d',event_date),MONTH) AS month,
           CONCAT(user_pseudo_id,'_',CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)) AS sess
         FROM `{PROJECT}.{GA4_DATASET}.events_*`
         WHERE _TABLE_SUFFIX>='{SUFFIX}' AND event_name='page_view' AND LOWER(collected_traffic_source.manual_medium)='organic'
-      ),
-      blog AS (SELECT * FROM pv WHERE REGEXP_CONTAINS(p, r'^/blog/[a-z]')),
-      pam AS (SELECT p, month, COUNT(DISTINCT sess) s FROM blog GROUP BY p, month),
-      pa AS (SELECT p, AVG(s) avg_monthly FROM pam GROUP BY p HAVING SUM(s) >= 6)
-      SELECT COUNT(*) n, ROUND(APPROX_QUANTILES(avg_monthly,100)[OFFSET(50)],1) med, ROUND(AVG(avg_monthly),1) mean FROM pa
-    """)[0]
-
-    # optimization opportunity: pages below page 1 / weak CTR, monthly click uplift at 4% target CTR
-    opp = f"""
-      SELECT p, pos, m_impr, m_clicks, GREATEST(0, m_impr*0.04 - m_clicks) AS uplift,
-        CASE WHEN pos < 4 THEN 'CTR fix' WHEN pos <= 15 THEN 'Striking distance' ELSE 'Page 2-3 push' END AS play
-      FROM (
-        SELECT REGEXP_REPLACE(REGEXP_REPLACE(url,r'^https?://[^/]+',''),r'[?#].*$','') AS p,
-          SUM(impressions)/6.0 AS m_impr, SUM(clicks)/6.0 AS m_clicks,
-          SAFE_DIVIDE(SUM(sum_position),SUM(impressions))+1 AS pos
-        FROM `{PROJECT}.{GSC_DATASET}.searchdata_url_impression` WHERE data_date>='{WINDOW_START}' GROUP BY p
-      )
-      WHERE pos < 20 AND m_impr >= 100 AND (m_clicks/NULLIF(m_impr,0)) < 0.03
-    """
-    inv = run(client, f"SELECT COUNT(*) n, ROUND(SUM(uplift),0) total FROM ({opp})")[0]
-    acts = run(client, f"""
-      SELECT p AS url, ROUND(pos,1) AS pos, ROUND(m_impr,0) AS monthly_impr,
-        ROUND(m_clicks/NULLIF(m_impr,0)*100,2) AS ctr, ROUND(uplift,0) AS uplift, play
-      FROM ({opp}) ORDER BY uplift DESC LIMIT 15
+      ) WHERE REGEXP_CONTAINS(p, r'^/blog/[a-z]') GROUP BY region, p, month
     """)
-    top10 = run(client, f"""
-      SELECT ROUND(SUM(IF(rn<=10,uplift,0)),0) t10, ROUND(SUM(IF(rn<=20,uplift,0)),0) t20
-      FROM (SELECT uplift, ROW_NUMBER() OVER (ORDER BY uplift DESC) rn FROM ({opp}))
-    """)[0]
+    # per (region,article): {months: [s...], total}
+    reg_art, all_art = {}, {}
+    for r in am:
+        s = int(r["s"] or 0)
+        reg_art.setdefault((r["region"], r["p"]), []).append(s)
+        all_art.setdefault(r["p"], 0)
+        all_art[r["p"]] += s  # total across months & regions (recomputed below per month)
+    # a per region = median of (avg monthly sessions) over articles with >=6 total
+    def a_stats(pairs_by_key):
+        avgs = []
+        for vals in pairs_by_key:
+            if sum(vals) >= 6:
+                avgs.append(sum(vals) / len(vals))
+        if not avgs:
+            return {"med": 0.0, "mean": 0.0, "n": 0}
+        return {"med": round(_median(avgs), 1), "mean": round(sum(avgs) / len(avgs), 1), "n": len(avgs)}
+    a_by_reg = {}
+    for rg in REGIONS:
+        a_by_reg[rg] = a_stats([v for (k, _p), v in reg_art.items() if k == rg] or [])
+    # All: per-article monthly across all regions
+    all_art_month = {}
+    for r in am:
+        all_art_month.setdefault(r["p"], {}).setdefault(r["month"], 0)
+        all_art_month[r["p"]][r["month"]] += int(r["s"] or 0)
+    a_all = a_stats([list(mv.values()) for mv in all_art_month.values()])
 
-    return {
-        "baseline": baseline,
-        "organic_monthly": organic_monthly,
-        "a_median": float(arow["med"] or 0), "a_mean": float(arow["mean"] or 0), "a_articles": int(arow["n"] or 0),
-        "inventory": int(inv["n"] or 0), "inventory_uplift": float(inv["total"] or 0),
-        "engineA_top10": float(top10["t10"] or 0), "engineA_top20": float(top10["t20"] or 0),
-        "actions": [{"url": a["url"], "pos": float(a["pos"] or 0), "monthly_impr": int(a["monthly_impr"] or 0),
-                     "ctr": float(a["ctr"] or 0), "uplift": int(a["uplift"] or 0), "play": a["play"]} for a in acts],
-    }
+    # 3. optimization opportunity by region x page (one query)
+    gp = run(client, f"""
+      SELECT {GSC_REGION_CASE} AS region,
+        REGEXP_REPLACE(REGEXP_REPLACE(url,r'^https?://[^/]+',''),r'[?#].*$','') AS p,
+        SUM(impressions)/6.0 AS m_impr, SUM(clicks)/6.0 AS m_clicks, SUM(sum_position) AS sp, SUM(impressions) AS raw_impr
+      FROM `{PROJECT}.{GSC_DATASET}.searchdata_url_impression` WHERE data_date>='{WINDOW_START}'
+      GROUP BY region, p
+    """)
+    # All bucket: aggregate per page across regions
+    all_pages = {}
+    for r in gp:
+        a = all_pages.setdefault(r["p"], {"m_impr": 0.0, "m_clicks": 0.0, "sp": 0.0, "raw_impr": 0.0})
+        a["m_impr"] += float(r["m_impr"] or 0); a["m_clicks"] += float(r["m_clicks"] or 0)
+        a["sp"] += float(r["sp"] or 0); a["raw_impr"] += float(r["raw_impr"] or 0)
+
+    def build_opp(rows_iter):
+        """rows_iter yields (p, m_impr, m_clicks, sp, raw_impr) -> ranked actions + inventory."""
+        out = []
+        for p, mi, mc, sp, rimp in rows_iter:
+            if mi < 100 or rimp <= 0:
+                continue
+            ctr = (mc / mi) if mi else 0
+            if ctr >= 0.03:
+                continue
+            pos = sp / rimp + 1
+            if pos >= 20:
+                continue
+            uplift = max(0, mi * 0.04 - mc)
+            play = "CTR fix" if pos < 4 else "Striking distance" if pos <= 15 else "Page 2-3 push"
+            out.append({"url": p, "pos": round(pos, 1), "monthly_impr": round(mi),
+                        "ctr": round(ctr * 100, 2), "uplift": round(uplift), "play": play})
+        out.sort(key=lambda x: -x["uplift"])
+        inv_n = len(out)
+        inv_up = sum(x["uplift"] for x in out)
+        t10 = sum(x["uplift"] for x in out[:10])
+        t20 = sum(x["uplift"] for x in out[:20])
+        return out[:15], inv_n, inv_up, t10, t20
+
+    reg_rows = {rg: [] for rg in REGIONS}
+    for r in gp:
+        if r["region"] in reg_rows:
+            reg_rows[r["region"]].append((r["p"], float(r["m_impr"] or 0), float(r["m_clicks"] or 0), float(r["sp"] or 0), float(r["raw_impr"] or 0)))
+
+    def model(scope, organic_arr, a_st):
+        if scope == "All":
+            acts, inv_n, inv_up, t10, t20 = build_opp((p, v["m_impr"], v["m_clicks"], v["sp"], v["raw_impr"]) for p, v in all_pages.items())
+        else:
+            acts, inv_n, inv_up, t10, t20 = build_opp(reg_rows.get(scope, []))
+        organic_monthly = [{"m": mlabels[i], "organic": organic_arr[i]} for i in range(len(mlabels))]
+        recent = organic_arr[-3:] or [0]
+        baseline = round(sum(recent) / max(1, len(recent)))
+        return {
+            "baseline": baseline, "organic_monthly": organic_monthly,
+            "a_median": a_st["med"], "a_mean": a_st["mean"], "a_articles": a_st["n"],
+            "inventory": inv_n, "inventory_uplift": round(inv_up),
+            "engineA_top10": round(t10), "engineA_top20": round(t20),
+            "actions": acts,
+        }
+
+    result = {"All": model("All", org_all, a_all)}
+    for rg in REGIONS:
+        result[rg] = model(rg, org[rg], a_by_reg[rg])
+    return result
 
 
 # ───────────────────────── Inbound (Postgres) ─────────────────────────
@@ -535,16 +603,24 @@ def run_all():
         {"label": "Converted", "value": inb.get("converted", 0), "sub": "qualified / won", "icon": "CircleCheck"},
     ]
 
-    # Velocity model inputs (real GA4/GSC + conversion/leads)
-    vel = safe("velocity", lambda: velocity_section(client))
+    # Velocity model inputs (region-keyed: All/USA/MENA/Europe/RoW) + conversion/leads
+    vel = safe("velocity", lambda: velocity_section(client, mlabels))
     if vel:
-        cr = (conv_total / sess_total) if sess_total else 0
-        # genuine leads per month over the window
+        rm = out.get("REGION_MONTHLY", {})
         n_months = max(1, len(out.get("MONTHLY", [])) or 1)
         leads_pm = round(inb.get("genuine", 0) / n_months, 1)
-        vel["conversion_rate"] = round(cr, 4)
-        vel["leads_per_month"] = leads_pm
-        vel["mqls_total"] = inb.get("mqls", 0)
+
+        def cr_for(scope):
+            if scope == "All":
+                return round(conv_total / sess_total, 4) if sess_total else 0
+            rows = rm.get(scope, [])
+            cs = sum(x["c"] for x in rows); ss = sum(x["s"] for x in rows)
+            return round(cs / ss, 4) if ss else 0
+
+        for scope, m in vel.items():
+            m["conversion_rate"] = cr_for(scope)
+            m["leads_per_month"] = leads_pm   # Pardot has no region → global
+            m["mqls_total"] = inb.get("mqls", 0)
         out["VELOCITY"] = vel
 
     out["asOf"] = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")

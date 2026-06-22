@@ -575,8 +575,8 @@ function Inbound() {
   );
 }
 
-function Velocity() {
-  const V = VELOCITY || {};
+function Velocity({ region }) {
+  const V = (VELOCITY && VELOCITY[region]) || (VELOCITY && VELOCITY.All) || {};
   const [targetPct, setTargetPct] = useState(20);
   const [optsPerMo, setOptsPerMo] = useState(6);
   const [capture, setCapture] = useState(25);
@@ -626,9 +626,9 @@ function Velocity() {
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <span style={{ fontFamily: SANS, fontSize: 11, color: C.sage, border: `1px solid #CFE0D7`, background: C.sageSoft, borderRadius: 5, padding: "2px 7px" }}>organic sessions · model from live GA4 + GSC</span>
-        <span style={{ fontFamily: SANS, fontSize: 11, color: C.faint }}>adjust the inputs — the required velocity recomputes live</span>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontFamily: SANS, fontSize: 11, color: C.sage, border: `1px solid #CFE0D7`, background: C.sageSoft, borderRadius: 5, padding: "2px 7px" }}>{region === "All" ? "All regions" : region} · organic sessions · live GA4 + GSC</span>
+        <span style={{ fontFamily: SANS, fontSize: 11, color: C.faint }}>adjust the inputs — the required velocity recomputes live · leads are global (Pardot has no region)</span>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
@@ -873,6 +873,7 @@ export default function App() {
     content: { region, frac: D.frac },
     top: { region, frac: D.frac },
     gap: { region, frac: D.frac },
+    velocity: { region },
     llm: { llmMonthly: D.llmMonthly, llmTotals: D.llmTotals, total: D.llmTotal, region },
   };
   const TABS = { overview: Overview, content: Content, top: TopPages, llm: LLM, gap: Opportunities, velocity: Velocity, inbound: Inbound };
