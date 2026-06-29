@@ -46,7 +46,7 @@ function aggMonths(arr, frac) {
 /* ───────── live data (populated from /api/v2/all) ───────── */
 let MONTHLY = [], VIEWS_BY_REGION = [], REGION_MONTHLY = { USA: [], MENA: [], Europe: [], RoW: [] };
 let CATEGORIES_MONTHLY = {}, TOPPAGES_MONTHLY = [], GAP_MONTHLY = { All: {} };
-let LLM_MONTHLY_ALL = [], LLM_REGION_MONTHLY = { USA: [], MENA: [], Europe: [], RoW: [] };
+let LLM_MONTHLY_ALL = [], LLM_MONTHLY_BY_REGION = {}, LLM_REGION_MONTHLY = { USA: [], MENA: [], Europe: [], RoW: [] };
 let LLM_SOURCE_BY_REGION = {}, LLM_CATEGORY_BY_REGION = { All: [] }, LLM_BY_PAGE = [];
 let LLM_LEAD_SIGNAL = { events: 0, dates: [] }, LLM_FUNNEL = { sessions: 0, convEvents: 0, signalEvents: 0 };
 let FUNNEL = [], GENUINE_BY_TYPE = [], LEAD_PAGES = [], INBOUND_SEGMENTS = [];
@@ -62,6 +62,7 @@ function applyPayload(d) {
   TOPPAGES_MONTHLY = d.TOPPAGES_MONTHLY || [];
   GAP_MONTHLY = d.GAP_MONTHLY || { All: {} };
   LLM_MONTHLY_ALL = d.LLM_MONTHLY_ALL || [];
+  LLM_MONTHLY_BY_REGION = d.LLM_MONTHLY_BY_REGION || {};
   LLM_REGION_MONTHLY = d.LLM_REGION_MONTHLY || LLM_REGION_MONTHLY;
   LLM_SOURCE_BY_REGION = d.LLM_SOURCE_BY_REGION || {};
   LLM_CATEGORY_BY_REGION = d.LLM_CATEGORY_BY_REGION || { All: [] };
@@ -352,7 +353,7 @@ function LLM({ llmMonthly, llmTotals, total, region }) {
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16 }} className="grid-2">
-        <Card title="LLM referral sessions" sub={`From GA4 source · all regions${region !== "All" ? " — see Share card for " + region : ""}`}>
+        <Card title="LLM referral sessions" sub={`From GA4 source · ${region === "All" ? "all regions" : region}${region !== "All" ? " (per-region counts are sparse)" : ""}`}>
           <div style={{ height: 240 }}>
             <ResponsiveContainer>
               <LineChart data={llmMonthly} margin={{ left: -18, right: 6, top: 6 }}>
@@ -814,9 +815,10 @@ export default function App() {
       const rows = byMonth[mi];
       return { m: MONTHS[mi], USA: sum(rows.map(r => r.region.USA.v)), MENA: sum(rows.map(r => r.region.MENA.v)), Europe: sum(rows.map(r => r.region.Europe.v)), RoW: sum(rows.map(r => r.region.RoW.v)) };
     });
+    const llmSrcArr = regKey ? (LLM_MONTHLY_BY_REGION[regKey] || LLM_MONTHLY_ALL) : LLM_MONTHLY_ALL;
     const llmMonthly = monthIdxs.map(mi => {
       const f = byMonth[mi].length / MONTH_INFO[mi].days;
-      const src = LLM_MONTHLY_ALL[mi] || {};
+      const src = llmSrcArr[mi] || {};
       return { m: MONTHS[mi], ChatGPT: (src.ChatGPT || 0) * f, Gemini: (src.Gemini || 0) * f, Claude: (src.Claude || 0) * f, Perplexity: (src.Perplexity || 0) * f, Copilot: (src.Copilot || 0) * f };
     });
     const totals = regKey

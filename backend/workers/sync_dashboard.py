@@ -300,13 +300,19 @@ def llm_sections(client):
 
     months = sorted({r["mon"] for r in srm}, key=lambda m: MONTHS.index(m) if m in MONTHS else 99)
 
-    # LLM_MONTHLY_ALL [{m, ChatGPT,...}]
+    # LLM_MONTHLY_ALL [{m, ChatGPT,...}] + per-region version (source×region×month)
     monthly_all = []
+    monthly_by_region = {reg: [] for reg in REGIONS}
     for m in months:
         row = {"m": m}
         for src in LLM_SOURCES:
             row[src] = sum(int(r["s"] or 0) for r in srm if r["mon"] == m and r["src"] == src)
         monthly_all.append(row)
+        for reg in REGIONS:
+            rrow = {"m": m}
+            for src in LLM_SOURCES:
+                rrow[src] = sum(int(r["s"] or 0) for r in srm if r["mon"] == m and r["src"] == src and r["region"] == reg)
+            monthly_by_region[reg].append(rrow)
 
     # LLM_REGION_MONTHLY {region: [{s,c}...]}
     region_monthly = {}
@@ -340,7 +346,8 @@ def llm_sections(client):
     lead_signal = {"events": contact["conv"] if contact else 0, "matchedToPardotLead": 0}
 
     return {
-        "LLM_MONTHLY_ALL": monthly_all, "LLM_REGION_MONTHLY": region_monthly,
+        "LLM_MONTHLY_ALL": monthly_all, "LLM_MONTHLY_BY_REGION": monthly_by_region,
+        "LLM_REGION_MONTHLY": region_monthly,
         "LLM_SOURCE_BY_REGION": source_by_region, "LLM_CATEGORY_BY_REGION": category_by_region,
         "LLM_BY_PAGE": by_page, "LLM_LEAD_SIGNAL": lead_signal, "_totals": totals,
     }, months
