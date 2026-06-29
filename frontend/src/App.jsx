@@ -52,7 +52,9 @@ let LLM_LEAD_SIGNAL = { events: 0, dates: [] }, LLM_FUNNEL = { sessions: 0, conv
 let FUNNEL = [], GENUINE_BY_TYPE = [], LEAD_PAGES = [], INBOUND_SEGMENTS = [];
 let INBOUND_TOTALS = { submissions: 0, genuine: 0, mqls: 0, converted: 0 };
 let VELOCITY = {};
+let DAILY_TRAFFIC = {}, DAILY_LLM = {};
 let MONTH_INFO = [], DAILY = [], DATE_MIN = "2026-01-01", DATE_MAX = "2026-06-30";
+const shortDate = (iso) => { const [, m, d] = iso.split("-").map(Number); return `${d} ${MONTHS[m - 1]}`; };
 
 function applyPayload(d) {
   MONTHLY = d.MONTHLY || [];
@@ -75,6 +77,8 @@ function applyPayload(d) {
   LEAD_PAGES = d.LEAD_PAGES || [];
   INBOUND_SEGMENTS = d.INBOUND_SEGMENTS || [];
   VELOCITY = d.VELOCITY || {};
+  DAILY_TRAFFIC = d.DAILY_TRAFFIC || {};
+  DAILY_LLM = d.DAILY_LLM || {};
   const fmap = Object.fromEntries((d.FUNNEL || []).map(f => [f.label, f.value]));
   INBOUND_TOTALS = {
     submissions: fmap["Pardot Submissions"] || 0, genuine: fmap["Genuine Leads"] || 0,
@@ -91,22 +95,39 @@ const pad2 = (n) => String(n).padStart(2, "0");
 const isoDate = (mi, day) => `${MONTH_INFO[mi].y}-${pad2(MONTH_INFO[mi].m)}-${pad2(day)}`;
 const fmtDate = (iso) => { const [y, m, d] = iso.split("-").map(Number); return `${d} ${MONTHS[m - 1]} ${y}`; };
 
-/* Daily series interpolated evenly across each month's real total (BigQuery is monthly grain here). */
+/* Real per-day series from DAILY_TRAFFIC/DAILY_LLM; falls back to even monthly
+   interpolation if the daily query didn't return (worker resilience). */
 function buildDaily() {
+  const allT = (DAILY_TRAFFIC && DAILY_TRAFFIC.All) || [];
+  if (allT.length) {
+    const miOf = {}; MONTH_INFO.forEach((x, i) => { miOf[x.m] = i; });
+    return allT.map((row, idx) => {
+      const iso = row.d;
+      const mnum = parseInt(iso.slice(5, 7), 10);
+      const mi = miOf[mnum] != null ? miOf[mnum] : 0;
+      const region = {};
+      REGIONS.forEach(rg => {
+        const r = (DAILY_TRAFFIC[rg] || [])[idx] || { s: 0, u: 0, v: 0, e: 0, c: 0, im: 0, ck: 0, p: 0 };
+        const l = (DAILY_LLM[rg] || [])[idx] || {};
+        region[rg] = { s: r.s, u: r.u, v: r.v, e: r.e, c: r.c, im: r.im, ck: r.ck, p: r.p, llm: l.total || 0, llmSrc: l };
+      });
+      const lAll = (DAILY_LLM.All || [])[idx] || {};
+      return { date: iso, mi, sessions: row.s, views: row.v, clicks: row.ck, impr: row.im, conv: row.c, llm: lAll.total || 0, llmSrc: lAll, region };
+    });
+  }
+  // fallback: even interpolation from monthly
   const days = [];
   MONTH_INFO.forEach((info, mi) => {
     const mo = MONTHLY[mi]; if (!mo) return;
     const f = 1 / info.days;
-    // additive region fields are spread evenly across the month's days so summing
-    // a date range reconstructs the real total; avg position (p) is left as-is.
     const reg = ["USA", "MENA", "Europe", "RoW"].map(r => {
       const m = (REGION_MONTHLY[r] || [])[mi] || { s: 0, u: 0, v: 0, e: 0, c: 0, im: 0, ck: 0, p: 0 };
-      return { s: m.s * f, u: m.u * f, v: m.v * f, e: m.e * f, c: m.c * f, im: m.im * f, ck: m.ck * f, p: m.p };
+      return { s: m.s * f, u: m.u * f, v: m.v * f, e: m.e * f, c: m.c * f, im: m.im * f, ck: m.ck * f, p: m.p, llm: 0, llmSrc: {} };
     });
     for (let d = 1; d <= info.days; d++) {
       days.push({
         date: isoDate(mi, d), mi,
-        sessions: mo.sessions * f, views: mo.views * f, clicks: mo.clicks * f, impr: mo.impr * f, conv: mo.conv * f, llm: (mo.llm || 0) * f,
+        sessions: mo.sessions * f, views: mo.views * f, clicks: mo.clicks * f, impr: mo.impr * f, conv: mo.conv * f, llm: (mo.llm || 0) * f, llmSrc: {},
         region: { USA: reg[0], MENA: reg[1], Europe: reg[2], RoW: reg[3] },
       });
     }
@@ -167,7 +188,7 @@ const FullWindow = () => (
 );
 
 /* ───────── tabs ───────── */
-function Overview({ monthly, viewsRegion, totals, range, region, regions }) {
+function Overview({ monthly, viewsRegion, totals, range, region, regions, daily }) {
   const max = Math.max(...FUNNEL.map(f => f.value), 1);
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -205,7 +226,7 @@ function Overview({ monthly, viewsRegion, totals, range, region, regions }) {
         <Kpi label="LLM Sessions" value={totals.llm} Icon={Sparkles} accent={C.ochre} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: region === "All" ? "1.4fr 1fr" : "1fr", gap: 16 }} className="grid-2">
-        <Card title="Monthly trend" sub={`Sessions · views · clicks — ${range}${region !== "All" ? ` · ${region}` : ""}`}>
+        <Card title={daily ? "Daily trend" : "Monthly trend"} sub={`Sessions · views · clicks — ${range}${region !== "All" ? ` · ${region}` : ""}`}>
           <div style={{ height: 230 }}>
             <ResponsiveContainer>
               <AreaChart data={monthly} margin={{ left: -18, right: 6, top: 6 }}>
@@ -805,56 +826,41 @@ export default function App() {
     slice.forEach(d => { (byMonth[d.mi] = byMonth[d.mi] || []).push(d); });
     const monthIdxs = Object.keys(byMonth).map(Number).sort((a, b) => a - b);
     const regKey = region === "All" ? null : region;
-    const monthly = monthIdxs.map(mi => {
-      const rows = byMonth[mi];
-      if (regKey) {
-        const llmRows = byMonth[mi].map(d => {
-          const dayFrac = 1 / MONTH_INFO[d.mi].days;
-          const monthLlm = (LLM_REGION_MONTHLY[regKey] || [])[d.mi] || { s: 0, c: 0 };
-          return { s: monthLlm.s * dayFrac, c: monthLlm.c * dayFrac };
-        });
-        return {
-          m: MONTHS[mi], sessions: sum(rows.map(r => r.region[regKey].s)), views: sum(rows.map(r => r.region[regKey].v)),
-          clicks: sum(rows.map(r => r.region[regKey].ck)), impr: sum(rows.map(r => r.region[regKey].im)),
-          conv: sum(rows.map(r => r.region[regKey].c)), llm: sum(llmRows.map(x => x.s)),
-        };
-      }
-      return { m: MONTHS[mi], sessions: sum(rows.map(r => r.sessions)), views: sum(rows.map(r => r.views)), clicks: sum(rows.map(r => r.clicks)), impr: sum(rows.map(r => r.impr)), conv: sum(rows.map(r => r.conv)), llm: sum(rows.map(r => r.llm)) };
-    });
-    const viewsRegion = monthIdxs.map(mi => {
-      const rows = byMonth[mi];
-      return { m: MONTHS[mi], USA: sum(rows.map(r => r.region.USA.v)), MENA: sum(rows.map(r => r.region.MENA.v)), Europe: sum(rows.map(r => r.region.Europe.v)), RoW: sum(rows.map(r => r.region.RoW.v)) };
-    });
-    const llmSrcArr = regKey ? (LLM_MONTHLY_BY_REGION[regKey] || LLM_MONTHLY_ALL) : LLM_MONTHLY_ALL;
-    const llmMonthly = monthIdxs.map(mi => {
-      const f = byMonth[mi].length / MONTH_INFO[mi].days;
-      const src = llmSrcArr[mi] || {};
-      return { m: MONTHS[mi], ChatGPT: (src.ChatGPT || 0) * f, Gemini: (src.Gemini || 0) * f, Claude: (src.Claude || 0) * f, Perplexity: (src.Perplexity || 0) * f, Copilot: (src.Copilot || 0) * f };
-    });
+    const daily = (hiIdx - loIdx + 1) <= 62;   // day-grain charts for short ranges
+    const lsrc = (d) => (regKey ? d.region[regKey].llmSrc : d.llmSrc) || {};
+
+    let monthly, viewsRegion, llmMonthly;
+    if (daily) {
+      monthly = slice.map(d => {
+        const r = regKey ? d.region[regKey] : { s: d.sessions, v: d.views, ck: d.clicks };
+        return { m: shortDate(d.date), sessions: r.s, views: r.v, clicks: r.ck };
+      });
+      viewsRegion = slice.map(d => ({ m: shortDate(d.date), USA: d.region.USA.v, MENA: d.region.MENA.v, Europe: d.region.Europe.v, RoW: d.region.RoW.v }));
+      llmMonthly = slice.map(d => { const ls = lsrc(d); return { m: shortDate(d.date), ChatGPT: ls.ChatGPT || 0, Gemini: ls.Gemini || 0, Claude: ls.Claude || 0, Perplexity: ls.Perplexity || 0, Copilot: ls.Copilot || 0 }; });
+    } else {
+      monthly = monthIdxs.map(mi => {
+        const rows = byMonth[mi];
+        return regKey
+          ? { m: MONTHS[mi], sessions: sum(rows.map(r => r.region[regKey].s)), views: sum(rows.map(r => r.region[regKey].v)), clicks: sum(rows.map(r => r.region[regKey].ck)) }
+          : { m: MONTHS[mi], sessions: sum(rows.map(r => r.sessions)), views: sum(rows.map(r => r.views)), clicks: sum(rows.map(r => r.clicks)) };
+      });
+      viewsRegion = monthIdxs.map(mi => { const rows = byMonth[mi]; return { m: MONTHS[mi], USA: sum(rows.map(r => r.region.USA.v)), MENA: sum(rows.map(r => r.region.MENA.v)), Europe: sum(rows.map(r => r.region.Europe.v)), RoW: sum(rows.map(r => r.region.RoW.v)) }; });
+      llmMonthly = monthIdxs.map(mi => { const rows = byMonth[mi]; const agg = { m: MONTHS[mi] }; LLM_SRC.forEach(s => { agg[s] = sum(rows.map(r => lsrc(r)[s] || 0)); }); return agg; });
+    }
+
     const totals = regKey
-      ? (() => {
-          const rows = slice.map(d => d.region[regKey]); const im = sum(rows.map(x => x.im));
-          const llmRows = slice.map(d => {
-            const dayFrac = 1 / MONTH_INFO[d.mi].days;
-            const monthLlm = (LLM_REGION_MONTHLY[regKey] || [])[d.mi] || { s: 0 };
-            return monthLlm.s * dayFrac;
-          });
-          return { sessions: sum(rows.map(x => x.s)), views: sum(rows.map(x => x.v)), clicks: sum(rows.map(x => x.ck)), impr: im, conv: sum(rows.map(x => x.c)), llm: sum(llmRows) };
-        })()
+      ? (() => { const rows = slice.map(d => d.region[regKey]); const im = sum(rows.map(x => x.im));
+          return { sessions: sum(rows.map(x => x.s)), views: sum(rows.map(x => x.v)), clicks: sum(rows.map(x => x.ck)), impr: im, conv: sum(rows.map(x => x.c)), llm: sum(rows.map(x => x.llm)) }; })()
       : { sessions: sum(slice.map(r => r.sessions)), views: sum(slice.map(r => r.views)), clicks: sum(slice.map(r => r.clicks)), impr: sum(slice.map(r => r.impr)), conv: sum(slice.map(r => r.conv)), llm: sum(slice.map(r => r.llm)) };
-    const regions = ["USA", "MENA", "Europe", "RoW"].map(r => {
-      const rows = slice.map(d => d.region[r]); const im = sum(rows.map(x => x.im));
-      const sess = sum(rows.map(x => x.s));
+    const regions = REGIONS.map(r => {
+      const rows = slice.map(d => d.region[r]); const im = sum(rows.map(x => x.im)); const sess = sum(rows.map(x => x.s));
       return { region: r, sessions: sess, users: sum(rows.map(x => x.u)), views: sum(rows.map(x => x.v)), impr: im, clicks: sum(rows.map(x => x.ck)), conv: sum(rows.map(x => x.c)), eng: sess ? sum(rows.map(x => x.e)) / sess : 0, pos: im ? sum(rows.map(x => x.im * x.p)) / im : 0 };
     });
-    // share derives from the date-sliced, region-aware monthly trend (so it filters too)
-    const llmTotals = LLM_SRC.map(src => ({ src, sessions: Math.round(sum(llmMonthly.map(x => x[src]))) }));
+    const llmTotals = LLM_SRC.map(src => ({ src, sessions: sum(slice.map(d => lsrc(d)[src] || 0)) }));
     const llmTotal = sum(llmTotals.map(x => x.sessions));
-    // fraction of each month covered by the selected range (for slicing the
-    // per-month category / top-page / gap tables)
     const frac = {};
     monthIdxs.forEach(mi => { frac[mi] = byMonth[mi].length / MONTH_INFO[mi].days; });
-    return { monthly, viewsRegion, llmMonthly, totals, regions, llmTotals, llmTotal, frac };
+    return { monthly, viewsRegion, llmMonthly, totals, regions, llmTotals, llmTotal, frac, daily };
   }, [data, loIdx, hiIdx, region]);
 
   const refresh = async () => {
@@ -880,7 +886,7 @@ export default function App() {
   ];
 
   const tabProps = {
-    overview: { monthly: D.monthly, viewsRegion: D.viewsRegion, totals: D.totals, range: rangeLabel, region, regions: D.regions },
+    overview: { monthly: D.monthly, viewsRegion: D.viewsRegion, totals: D.totals, range: rangeLabel, region, regions: D.regions, daily: D.daily },
     content: { region, frac: D.frac },
     top: { region, frac: D.frac },
     gap: { region, frac: D.frac },

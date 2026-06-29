@@ -60,6 +60,94 @@ GSC_URL_M = f"""
 """
 
 
+def daily_sections(client):
+    """Real per-day series (not interpolated) for the trend charts + accurate
+    short-range totals. DAILY_TRAFFIC {region:[{d,s,u,v,e,c,im,ck,p}]} and
+    DAILY_LLM {region:[{d,ChatGPT,...,total}]}; 'All' summed across regions."""
+    ga = run(client, f"""
+      SELECT region, d,
+        COUNT(DISTINCT sess) s, COUNT(DISTINCT uid) u,
+        COUNTIF(event_name='page_view') v, COUNTIF(event_name='{CONV_EVENT}') c,
+        COUNT(DISTINCT IF(engaged, sess, NULL)) e
+      FROM (
+        SELECT {GA4_REGION_CASE} AS region,
+          FORMAT_DATE('%Y-%m-%d', PARSE_DATE('%Y%m%d', event_date)) AS d,
+          CONCAT(user_pseudo_id,'_',CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)) AS sess,
+          user_pseudo_id AS uid, event_name,
+          ((SELECT value.string_value FROM UNNEST(event_params) WHERE key='session_engaged')='1') AS engaged
+        FROM `{PROJECT}.{GA4_DATASET}.events_*` WHERE _TABLE_SUFFIX >= '{SUFFIX}'
+      ) GROUP BY region, d
+    """)
+    gsc = run(client, f"""
+      SELECT {GSC_REGION_CASE} AS region, FORMAT_DATE('%Y-%m-%d', data_date) AS d,
+        SUM(impressions) im, SUM(clicks) ck,
+        SAFE_DIVIDE(SUM(sum_top_position), SUM(impressions))+1 AS p
+      FROM `{PROJECT}.{GSC_DATASET}.searchdata_site_impression`
+      WHERE data_date >= '{WINDOW_START}' GROUP BY region, d
+    """)
+    llm = run(client, f"""
+      WITH tagged AS (
+        SELECT {GA4_REGION_CASE} AS region,
+          FORMAT_DATE('%Y-%m-%d', PARSE_DATE('%Y%m%d', event_date)) AS d,
+          CONCAT(user_pseudo_id,'_',CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)) AS sess,
+          ({LLM_SOURCE_CASE}) AS src
+        FROM (
+          SELECT geo, event_date, user_pseudo_id, event_params,
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key='source'), collected_traffic_source.manual_source, '')) AS h
+          FROM `{PROJECT}.{GA4_DATASET}.events_*` WHERE _TABLE_SUFFIX >= '{SUFFIX}'
+        )
+      ),
+      ss AS (SELECT region, d, sess, MAX(src) OVER (PARTITION BY sess) AS ssrc FROM tagged)
+      SELECT region, d, ssrc AS src, COUNT(DISTINCT sess) s
+      FROM ss WHERE ssrc IS NOT NULL GROUP BY region, d, src
+    """)
+
+    # collect ordered date axis
+    days = sorted({r["d"] for r in ga} | {r["d"] for r in gsc})
+    didx = {d: i for i, d in enumerate(days)}
+
+    def blank_traffic():
+        return [{"d": d, "s": 0, "u": 0, "v": 0, "e": 0, "c": 0, "im": 0, "ck": 0, "p": 0} for d in days]
+
+    traffic = {rg: blank_traffic() for rg in REGIONS}
+    for r in ga:
+        if r["region"] in traffic and r["d"] in didx:
+            t = traffic[r["region"]][didx[r["d"]]]
+            t["s"] = int(r["s"] or 0); t["u"] = int(r["u"] or 0); t["v"] = int(r["v"] or 0)
+            t["e"] = int(r["e"] or 0); t["c"] = int(r["c"] or 0)
+    for r in gsc:
+        if r["region"] in traffic and r["d"] in didx:
+            t = traffic[r["region"]][didx[r["d"]]]
+            t["im"] = int(r["im"] or 0); t["ck"] = int(r["ck"] or 0); t["p"] = round(float(r["p"] or 0), 1)
+    traffic_all = blank_traffic()
+    for rg in REGIONS:
+        for i, t in enumerate(traffic[rg]):
+            a = traffic_all[i]
+            for kf in ("s", "u", "v", "e", "c", "im", "ck"):
+                a[kf] += t[kf]
+    # position for 'All' = impression-weighted; approximate via re-derive not stored daily, leave 0 (charts don't use All daily pos)
+    DAILY_TRAFFIC = {"All": traffic_all, **traffic}
+
+    def blank_llm():
+        return [{"d": d, **{s: 0 for s in LLM_SOURCES}, "total": 0} for d in days]
+
+    dllm = {rg: blank_llm() for rg in REGIONS}
+    for r in llm:
+        if r["region"] in dllm and r["d"] in didx and r["src"] in LLM_SOURCES:
+            row = dllm[r["region"]][didx[r["d"]]]
+            row[r["src"]] += int(r["s"] or 0); row["total"] += int(r["s"] or 0)
+    llm_all = blank_llm()
+    for rg in REGIONS:
+        for i, row in enumerate(dllm[rg]):
+            a = llm_all[i]
+            for s in LLM_SOURCES:
+                a[s] += row[s]
+            a["total"] += row["total"]
+    DAILY_LLM = {"All": llm_all, **dllm}
+
+    return {"DAILY_TRAFFIC": DAILY_TRAFFIC, "DAILY_LLM": DAILY_LLM}
+
+
 def _months(client):
     """Canonical ordered list of month labels present in GA4 (Jan, Feb, ...)."""
     rows = run(client, f"""
@@ -573,6 +661,10 @@ def run_all():
         out["REGION_MONTHLY"] = region_monthly
         out["MONTHLY"] = monthly
         out["VIEWS_BY_REGION"] = views_by_region
+
+    daily = safe("daily", lambda: daily_sections(client)) or {}
+    out["DAILY_TRAFFIC"] = daily.get("DAILY_TRAFFIC", {})
+    out["DAILY_LLM"] = daily.get("DAILY_LLM", {})
 
     out["CATEGORIES_MONTHLY"] = safe("categories", lambda: categories_section(client, mlabels)) or {}
     out["TOPPAGES_MONTHLY"] = safe("toppages", lambda: toppages_section(client, mlabels)) or []
