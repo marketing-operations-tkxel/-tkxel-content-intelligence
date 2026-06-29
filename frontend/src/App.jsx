@@ -376,7 +376,7 @@ function LLM({ llmMonthly, llmTotals, total, region, frac }) {
             </ResponsiveContainer>
           </div>
         </Card>
-        <Card title="Share of LLM traffic" sub={region === "All" ? "selected range, all regions" : `${region} · full window`}>
+        <Card title="Share of LLM traffic" sub={`${region === "All" ? "all regions" : region} · selected range`}>
           <div style={{ display: "grid", gap: 9, marginTop: 4 }}>
             {llmTotals.map(l => {
               const share = total ? l.sessions / total : 0;
@@ -391,7 +391,7 @@ function LLM({ llmMonthly, llmTotals, total, region, frac }) {
         </Card>
       </div>
 
-      <Card title="LLM traffic by content type" sub={`${region === "All" ? "Full window" : region} · which content AI assistants actually surface`} right={region === "All" ? <FullWindow /> : null}>
+      <Card title="LLM traffic by content type" sub={`${region === "All" ? "all regions" : region} · selected range · which content AI assistants actually surface`}>
         <div style={{ display: "grid", gap: 9, marginTop: 4 }}>
           {catData.map(d => (
             <div key={d.cat} style={{ display: "flex", alignItems: "center", gap: 10 }}>
