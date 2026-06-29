@@ -287,8 +287,8 @@ def llm_sections(client):
     # category x region (sessions + conv)
     cr = run(client, f"""
       WITH t AS ({base})
-      SELECT region, category, COUNT(DISTINCT sess) AS s, COUNTIF(event_name='{CONV_EVENT}') AS c
-      FROM t GROUP BY region, category
+      SELECT region, category, mon, COUNT(DISTINCT sess) AS s, COUNTIF(event_name='{CONV_EVENT}') AS c
+      FROM t GROUP BY region, category, mon
     """)
     # by page (sessions + conv + top source)
     pg = run(client, f"""
@@ -328,16 +328,15 @@ def llm_sections(client):
                for src in LLM_SOURCES]
         source_by_region[reg] = sorted([x for x in lst if x["sessions"] > 0], key=lambda x: -x["sessions"]) or lst
 
-    # LLM_CATEGORY_BY_REGION {All/region: [{cat, sessions, conv}]}
-    def cat_build(region_filter):
-        agg = {}
-        for r in cr:
-            if region_filter and r["region"] != region_filter:
-                continue
-            a = agg.setdefault(r["category"], {"sessions": 0, "conv": 0})
-            a["sessions"] += int(r["s"] or 0); a["conv"] += int(r["c"] or 0)
-        return sorted([{"cat": k, **v} for k, v in agg.items()], key=lambda x: -x["sessions"])
-    category_by_region = {"All": cat_build(None), **{reg: cat_build(reg) for reg in REGIONS}}
+    # LLM_CATEGORY_MONTHLY {region: {cat: [{sessions, conv} per month]}} (All summed client-side)
+    morder = {m: i for i, m in enumerate(months)}
+    cat_monthly = {reg: {} for reg in REGIONS}
+    for r in cr:
+        if r["region"] not in cat_monthly or r["mon"] not in morder:
+            continue
+        arr = cat_monthly[r["region"]].setdefault(r["category"], [{"sessions": 0, "conv": 0} for _ in months])
+        i = morder[r["mon"]]
+        arr[i]["sessions"] += int(r["s"] or 0); arr[i]["conv"] += int(r["c"] or 0)
 
     by_page = [{"url": r["url"] or "/", "sessions": int(r["s"] or 0), "conv": int(r["c"] or 0), "top": r["top"]} for r in pg]
 
@@ -348,7 +347,7 @@ def llm_sections(client):
     return {
         "LLM_MONTHLY_ALL": monthly_all, "LLM_MONTHLY_BY_REGION": monthly_by_region,
         "LLM_REGION_MONTHLY": region_monthly,
-        "LLM_SOURCE_BY_REGION": source_by_region, "LLM_CATEGORY_BY_REGION": category_by_region,
+        "LLM_SOURCE_BY_REGION": source_by_region, "LLM_CATEGORY_MONTHLY": cat_monthly,
         "LLM_BY_PAGE": by_page, "LLM_LEAD_SIGNAL": lead_signal, "_totals": totals,
     }, months
 

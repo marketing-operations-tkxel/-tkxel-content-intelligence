@@ -47,7 +47,7 @@ function aggMonths(arr, frac) {
 let MONTHLY = [], VIEWS_BY_REGION = [], REGION_MONTHLY = { USA: [], MENA: [], Europe: [], RoW: [] };
 let CATEGORIES_MONTHLY = {}, TOPPAGES_MONTHLY = [], GAP_MONTHLY = { All: {} };
 let LLM_MONTHLY_ALL = [], LLM_MONTHLY_BY_REGION = {}, LLM_REGION_MONTHLY = { USA: [], MENA: [], Europe: [], RoW: [] };
-let LLM_SOURCE_BY_REGION = {}, LLM_CATEGORY_BY_REGION = { All: [] }, LLM_BY_PAGE = [];
+let LLM_SOURCE_BY_REGION = {}, LLM_CATEGORY_MONTHLY = {}, LLM_BY_PAGE = [];
 let LLM_LEAD_SIGNAL = { events: 0, dates: [] }, LLM_FUNNEL = { sessions: 0, convEvents: 0, signalEvents: 0 };
 let FUNNEL = [], GENUINE_BY_TYPE = [], LEAD_PAGES = [], INBOUND_SEGMENTS = [];
 let INBOUND_TOTALS = { submissions: 0, genuine: 0, mqls: 0, converted: 0 };
@@ -65,7 +65,7 @@ function applyPayload(d) {
   LLM_MONTHLY_BY_REGION = d.LLM_MONTHLY_BY_REGION || {};
   LLM_REGION_MONTHLY = d.LLM_REGION_MONTHLY || LLM_REGION_MONTHLY;
   LLM_SOURCE_BY_REGION = d.LLM_SOURCE_BY_REGION || {};
-  LLM_CATEGORY_BY_REGION = d.LLM_CATEGORY_BY_REGION || { All: [] };
+  LLM_CATEGORY_MONTHLY = d.LLM_CATEGORY_MONTHLY || {};
   LLM_BY_PAGE = d.LLM_BY_PAGE || [];
   LLM_LEAD_SIGNAL = { events: 0, dates: [], ...(d.LLM_LEAD_SIGNAL || {}) };
   if (!LLM_LEAD_SIGNAL.dates) LLM_LEAD_SIGNAL.dates = [];
@@ -341,8 +341,18 @@ function TopPages({ region: globalRegion, frac }) {
   );
 }
 
-function LLM({ llmMonthly, llmTotals, total, region }) {
-  const catData = LLM_CATEGORY_BY_REGION[region] || LLM_CATEGORY_BY_REGION.All || [];
+function LLM({ llmMonthly, llmTotals, total, region, frac }) {
+  const regs = region === "All" ? REGIONS : [region];
+  const catAgg = {};
+  regs.forEach(rg => {
+    const byCat = LLM_CATEGORY_MONTHLY[rg] || {};
+    Object.entries(byCat).forEach(([cat, arr]) => {
+      const a = catAgg[cat] || (catAgg[cat] = { sessions: 0, conv: 0 });
+      for (const mi in (frac || {})) { const c = arr[mi]; if (!c) continue; a.sessions += c.sessions * frac[mi]; a.conv += c.conv * frac[mi]; }
+    });
+  });
+  const catData = Object.entries(catAgg).map(([cat, a]) => ({ cat, sessions: Math.round(a.sessions), conv: Math.round(a.conv) }))
+    .filter(d => d.sessions > 0).sort((x, y) => y.sessions - x.sessions);
   const maxCat = Math.max(...catData.map(d => d.sessions), 1);
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -837,9 +847,8 @@ export default function App() {
       const sess = sum(rows.map(x => x.s));
       return { region: r, sessions: sess, users: sum(rows.map(x => x.u)), views: sum(rows.map(x => x.v)), impr: im, clicks: sum(rows.map(x => x.ck)), conv: sum(rows.map(x => x.c)), eng: sess ? sum(rows.map(x => x.e)) / sess : 0, pos: im ? sum(rows.map(x => x.im * x.p)) / im : 0 };
     });
-    const llmTotals = regKey
-      ? (LLM_SOURCE_BY_REGION[regKey] || [])
-      : LLM_SRC.map(src => ({ src, sessions: sum(llmMonthly.map(x => x[src])) }));
+    // share derives from the date-sliced, region-aware monthly trend (so it filters too)
+    const llmTotals = LLM_SRC.map(src => ({ src, sessions: Math.round(sum(llmMonthly.map(x => x[src]))) }));
     const llmTotal = sum(llmTotals.map(x => x.sessions));
     // fraction of each month covered by the selected range (for slicing the
     // per-month category / top-page / gap tables)
@@ -876,7 +885,7 @@ export default function App() {
     top: { region, frac: D.frac },
     gap: { region, frac: D.frac },
     velocity: { region },
-    llm: { llmMonthly: D.llmMonthly, llmTotals: D.llmTotals, total: D.llmTotal, region },
+    llm: { llmMonthly: D.llmMonthly, llmTotals: D.llmTotals, total: D.llmTotal, region, frac: D.frac },
   };
   const TABS = { overview: Overview, content: Content, top: TopPages, llm: LLM, gap: Opportunities, velocity: Velocity, inbound: Inbound };
   const Active = TABS[tab];
