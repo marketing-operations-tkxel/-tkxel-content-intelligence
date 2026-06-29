@@ -1,0 +1,21 @@
+name: Daily data sync
+
+# Refreshes the dashboard every morning by triggering the Railway sync endpoint,
+# which runs all workers (traffic, inbound, mql, dashboard) server-side with their
+# credentials. GA4's BigQuery export lands by ~03:00 UTC, so we run at 04:00 UTC.
+on:
+  schedule:
+    - cron: "0 4 * * *"   # 04:00 UTC daily  (09:00 PKT)
+  workflow_dispatch: {}    # allow manual runs from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Railway sync
+        run: |
+          set -e
+          echo "Triggering sync at $(date -u)…"
+          resp=$(curl -fsS -X POST https://tkxel-api-production.up.railway.app/api/sync)
+          echo "Response: $resp"
+          echo "Workers run asynchronously on Railway (~3-4 min); the dashboard 'data as of' updates when they finish."
