@@ -52,6 +52,7 @@ let LLM_LEAD_SIGNAL = { events: 0, dates: [] }, LLM_FUNNEL = { sessions: 0, conv
 let FUNNEL = [], GENUINE_BY_TYPE = [], LEAD_PAGES = [], INBOUND_SEGMENTS = [];
 let INBOUND_TOTALS = { submissions: 0, genuine: 0, mqls: 0, converted: 0 };
 let VELOCITY = {};
+let DOMAIN = "tkxel.com", INBOUND_ENABLED = true;
 let DAILY_TRAFFIC = {}, DAILY_LLM = {};
 let MONTH_INFO = [], DAILY = [], DATE_MIN = "2026-01-01", DATE_MAX = "2026-06-30";
 const shortDate = (iso) => { const [, m, d] = iso.split("-").map(Number); return `${d} ${MONTHS[m - 1]}`; };
@@ -79,6 +80,8 @@ function applyPayload(d) {
   VELOCITY = d.VELOCITY || {};
   DAILY_TRAFFIC = d.DAILY_TRAFFIC || {};
   DAILY_LLM = d.DAILY_LLM || {};
+  DOMAIN = d.domain || "tkxel.com";
+  INBOUND_ENABLED = d.inbound_enabled !== false;
   const fmap = Object.fromEntries((d.FUNNEL || []).map(f => [f.label, f.value]));
   INBOUND_TOTALS = {
     submissions: fmap["Pardot Submissions"] || 0, genuine: fmap["Genuine Leads"] || 0,
@@ -525,6 +528,15 @@ function AssetFunnel({ p }) {
 }
 
 function Inbound() {
+  if (!INBOUND_ENABLED) {
+    return (
+      <Card title="Inbound Funnel">
+        <div style={{ fontFamily: SANS, fontSize: 13, color: C.muted, lineHeight: 1.6, padding: "8px 2px" }}>
+          The inbound funnel (Pardot Form Handler leads → MQLs) is available for <b>Tkxel</b> only — the other brands aren't wired into Pardot/the SDR tracker. Switch the brand to <b>Tkxel</b> to view it. All other tabs (Overview, Content, Top Pages, LLM Traffic, Opportunities, Velocity) work for every brand from GA4 + GSC.
+        </div>
+      </Card>
+    );
+  }
   const seg = INBOUND_SEGMENTS; const tot = Math.max(1, sum(seg.map(s => s.v)));
   const maxT = Math.max(...GENUINE_BY_TYPE.map(d => d.leads), 1); const maxLP = Math.max(...LEAD_PAGES.map(d => d.leads), 1);
   const funnelAssets = LEAD_PAGES.filter(p => p.leads >= 2 || p.mql > 0);
@@ -794,24 +806,29 @@ export default function App() {
   const [err, setErr] = useState(null);
   const [tab, setTab] = useState("overview");
   const [region, setRegion] = useState("All");
+  const [brand, setBrand] = useState("tkxel");
+  const [brands, setBrands] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [asOf, setAsOf] = useState("");
   const [fromDate, setFromDate] = useState(null);
   const [toDate, setToDate] = useState(null);
 
-  const load = useCallback(async () => {
-    const r = await fetch(`${API}/api/v2/all`);
+  const fetchData = useCallback(async (resetDates) => {
+    const r = await fetch(`${API}/api/v2/all?brand=${brand}`);
     const d = await r.json();
     if (!d.ready) { setErr("Dashboard data is still computing — the first sync may be running. Try Refresh in a minute."); return false; }
     applyPayload(d);
     setAsOf(d.asOf || d._updated || "");
-    setFromDate(prev => prev || DATE_MIN);
-    setToDate(prev => prev || DATE_MAX);
+    if (resetDates) { setFromDate(DATE_MIN); setToDate(DATE_MAX); }
+    else { setFromDate(prev => prev || DATE_MIN); setToDate(prev => prev || DATE_MAX); }
     setData(d); setErr(null);
     return true;
-  }, []);
+  }, [brand]);
 
-  useEffect(() => { load().catch(e => setErr(String(e))); }, [load]);
+  // brand list for the dropdown (once)
+  useEffect(() => { fetch(`${API}/api/v2/brands`).then(r => r.json()).then(b => setBrands(b.brands || [])).catch(() => {}); }, []);
+  // (re)load whenever the brand changes — resets the date range to the brand's window
+  useEffect(() => { fetchData(true).catch(e => setErr(String(e))); }, [fetchData]);
 
   const loIdx = data ? Math.min(dayIndex(fromDate), dayIndex(toDate)) : 0;
   const hiIdx = data ? Math.max(dayIndex(fromDate), dayIndex(toDate)) : 0;
@@ -866,7 +883,7 @@ export default function App() {
   const refresh = async () => {
     if (syncing) return; setSyncing(true);
     try { await fetch(`${API}/api/sync`, { method: "POST" }); } catch { /* ignore */ }
-    try { await load(); } catch { /* ignore */ }
+    try { await fetchData(false); } catch { /* ignore */ }
     setSyncing(false);
   };
 
@@ -910,9 +927,13 @@ export default function App() {
       `}</style>
 
       <aside className="sidebar" style={{ width: 220, background: C.ink, color: "#E8E6E0", display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh" }}>
-        <div style={{ padding: "22px 20px 18px" }}>
+        <div style={{ padding: "22px 20px 14px" }}>
           <div style={{ fontFamily: MONO, fontWeight: 700, fontSize: 17, letterSpacing: 1, color: "#fff" }}>tkxel<span style={{ color: C.sageHi }}>.</span></div>
           <div style={{ fontFamily: SANS, fontSize: 10.5, color: "#8A8B86", letterSpacing: 1.5, textTransform: "uppercase", marginTop: 3 }}>Content Intelligence</div>
+          <select value={brand} onChange={e => setBrand(e.target.value)}
+            style={{ marginTop: 12, width: "100%", fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: "#fff", background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.16)", borderRadius: 8, padding: "8px 10px", cursor: "pointer", appearance: "none" }}>
+            {(brands.length ? brands : [{ key: "tkxel", label: "Tkxel" }]).map(b => <option key={b.key} value={b.key} style={{ color: "#1B1E24" }}>{b.label}</option>)}
+          </select>
         </div>
         <nav style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 12px" }}>
           {NAV.map(n => {
@@ -931,7 +952,7 @@ export default function App() {
           <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
             <div>
               <div style={{ fontSize: 16, fontWeight: 700 }}>{NAV.find(n => n.id === tab).label}</div>
-              <div style={{ fontSize: 11.5, color: C.muted }}>tkxel.com · {rangeLabel} <span style={{ color: C.faint }}>({spanDays} day{spanDays !== 1 ? "s" : ""})</span>{region !== "All" && <span style={{ color: C.sage, fontWeight: 600 }}> · {region}</span>}</div>
+              <div style={{ fontSize: 11.5, color: C.muted }}>{DOMAIN} · {rangeLabel} <span style={{ color: C.faint }}>({spanDays} day{spanDays !== 1 ? "s" : ""})</span>{region !== "All" && <span style={{ color: C.sage, fontWeight: 600 }}> · {region}</span>}</div>
             </div>
             <div style={{ marginLeft: "auto" }}>
               <button onClick={refresh} style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 14px", borderRadius: 8, border: `1px solid ${C.sage}`, background: syncing ? C.sageSoft : C.sage, color: syncing ? C.sage : "#fff", fontFamily: SANS, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}><RefreshCw size={14} className={syncing ? "spin" : ""} />{syncing ? "Syncing…" : "Refresh"}</button>
@@ -959,7 +980,7 @@ export default function App() {
             </div>
           </div>
         </header>
-        <div key={tab + fromDate + toDate + region} className="fade" style={{ padding: 24, maxWidth: 1180, width: "100%" }}><Active {...(tabProps[tab] || {})} /></div>
+        <div key={brand + tab + fromDate + toDate + region} className="fade" style={{ padding: 24, maxWidth: 1180, width: "100%" }}><Active {...(tabProps[tab] || {})} /></div>
         <div style={{ padding: "0 24px 26px", fontFamily: SANS, fontSize: 11, color: C.faint }}>
           Live from BigQuery (mkt-data-wh) · GA4 + GSC + Pardot + SDR tracker. Monthly grain interpolated to days for the range demo. Date range and region drive Overview, Content, Top Pages, Opportunities &amp; LLM Traffic (category/source level; the by-source monthly trend and page-level LLM table stay global — per-region-per-source counts are too sparse to split honestly). Inbound Funnel is global-only (Pardot has no region field). "Refresh" triggers the real sync. Funnel stages span GA4 · Pardot · SDR tracker and are not expected to reconcile.
         </div>

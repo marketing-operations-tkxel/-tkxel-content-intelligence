@@ -24,40 +24,56 @@ from db.connection import get_cursor, mark_sync  # noqa: E402
 SUFFIX = WINDOW_START.replace("-", "")
 CONV_EVENT = "form_submit"
 
-# Reusable GA4 per-event projection (region, month, session key, page path, category, source, engaged)
-GA4_EV = f"""
-  SELECT
-    {GA4_REGION_CASE} AS region,
-    FORMAT_DATE('%b', PARSE_DATE('%Y%m%d', event_date)) AS mon,
-    DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH) AS month,
-    CONCAT(user_pseudo_id, '_', CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)) AS sess,
-    user_pseudo_id AS uid,
-    event_name,
-    REGEXP_REPLACE(REGEXP_REPLACE((SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_location'), r'^https?://[^/]+', ''), r'[?#].*$', '') AS p,
-    (SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_title') AS title,
-    ((SELECT value.string_value FROM UNNEST(event_params) WHERE key='session_engaged') = '1') AS engaged,
-    LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key='source'), collected_traffic_source.manual_source, '')) AS h
-  FROM `{PROJECT}.{GA4_DATASET}.events_*`
-  WHERE _TABLE_SUFFIX >= '{SUFFIX}'
-"""
+# ── Brand registry: each has its own GA4 + GSC dataset. Inbound (Pardot) is
+#    Tkxel-only. Section SQL reads the module globals below, which set_brand() swaps. ──
+BRANDS = {
+    "tkxel":      {"label": "Tkxel",      "domain": "tkxel.com",         "ga4": "analytics_407787656", "gsc": "searchconsole_data",          "inbound": True},
+    "reloadux":   {"label": "ReloadUX",   "domain": "reloadux.com",      "ga4": "analytics_307814520", "gsc": "searchconsole_ReloadUX",      "inbound": False},
+    "bettertech": {"label": "BetterTech", "domain": "thebettertech.io",  "ga4": "analytics_404929648", "gsc": "searchconsole_bettertech",    "inbound": False},
+    "roameo":     {"label": "Roameo",     "domain": "roameoresorts.com", "ga4": "analytics_496438827", "gsc": "searchconsole_roameoresorts", "inbound": False},
+}
 
-GSC_URL = f"""
-  SELECT {GSC_REGION_CASE} AS region,
-    REGEXP_REPLACE(REGEXP_REPLACE(url, r'^https?://[^/]+', ''), r'[?#].*$', '') AS p,
-    impressions, clicks, sum_position
-  FROM `{PROJECT}.{GSC_DATASET}.searchdata_url_impression`
-  WHERE data_date >= '{WINDOW_START}'
-"""
+# Active datasets + SQL templates — rebuilt per brand by set_brand().
+GA4_EV = GSC_URL = GSC_URL_M = ""
 
-# Same as GSC_URL but carries the month label so sections can be date-sliced.
-GSC_URL_M = f"""
-  SELECT {GSC_REGION_CASE} AS region,
-    FORMAT_DATE('%b', data_date) AS mon,
-    REGEXP_REPLACE(REGEXP_REPLACE(url, r'^https?://[^/]+', ''), r'[?#].*$', '') AS p,
-    impressions, clicks, sum_position
-  FROM `{PROJECT}.{GSC_DATASET}.searchdata_url_impression`
-  WHERE data_date >= '{WINDOW_START}'
-"""
+
+def set_brand(ga4, gsc):
+    """Point all section SQL at a given brand's GA4 + GSC datasets."""
+    global GA4_DATASET, GSC_DATASET, GA4_EV, GSC_URL, GSC_URL_M
+    GA4_DATASET, GSC_DATASET = ga4, gsc
+    GA4_EV = f"""
+      SELECT
+        {GA4_REGION_CASE} AS region,
+        FORMAT_DATE('%b', PARSE_DATE('%Y%m%d', event_date)) AS mon,
+        DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH) AS month,
+        CONCAT(user_pseudo_id, '_', CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id') AS STRING)) AS sess,
+        user_pseudo_id AS uid,
+        event_name,
+        REGEXP_REPLACE(REGEXP_REPLACE((SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_location'), r'^https?://[^/]+', ''), r'[?#].*$', '') AS p,
+        (SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_title') AS title,
+        ((SELECT value.string_value FROM UNNEST(event_params) WHERE key='session_engaged') = '1') AS engaged,
+        LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key='source'), collected_traffic_source.manual_source, '')) AS h
+      FROM `{PROJECT}.{ga4}.events_*`
+      WHERE _TABLE_SUFFIX >= '{SUFFIX}'
+    """
+    GSC_URL = f"""
+      SELECT {GSC_REGION_CASE} AS region,
+        REGEXP_REPLACE(REGEXP_REPLACE(url, r'^https?://[^/]+', ''), r'[?#].*$', '') AS p,
+        impressions, clicks, sum_position
+      FROM `{PROJECT}.{gsc}.searchdata_url_impression`
+      WHERE data_date >= '{WINDOW_START}'
+    """
+    GSC_URL_M = f"""
+      SELECT {GSC_REGION_CASE} AS region,
+        FORMAT_DATE('%b', data_date) AS mon,
+        REGEXP_REPLACE(REGEXP_REPLACE(url, r'^https?://[^/]+', ''), r'[?#].*$', '') AS p,
+        impressions, clicks, sum_position
+      FROM `{PROJECT}.{gsc}.searchdata_url_impression`
+      WHERE data_date >= '{WINDOW_START}'
+    """
+
+
+set_brand(GA4_DATASET, GSC_DATASET)  # initialize with Tkxel defaults
 
 
 def daily_sections(client):
@@ -639,8 +655,7 @@ def inbound_sections():
 
 
 # ───────────────────────── assemble ─────────────────────────
-def run_all():
-    client = get_client()
+def run_all(client, inbound_enabled=True):
     out = {}
     errors = []
 
@@ -684,29 +699,36 @@ def run_all():
                       "signalEvents": llm_data["LLM_LEAD_SIGNAL"]["events"]}
         out["LLM_FUNNEL"] = llm_funnel
 
-    inb = safe("inbound", inbound_sections) or {}
+    inb = (safe("inbound", inbound_sections) or {}) if inbound_enabled else {}
     out["GENUINE_BY_TYPE"] = inb.get("GENUINE_BY_TYPE", [])
     out["LEAD_PAGES"] = inb.get("LEAD_PAGES", [])
     out["INBOUND_SEGMENTS"] = inb.get("INBOUND_SEGMENTS", [])
+    out["inbound_enabled"] = inbound_enabled
 
     # FUNNEL (Overview + Inbound headline)
     sess_total = sum(r["sessions"] for r in out.get("MONTHLY", [])) or 0
     conv_total = sum(r["conv"] for r in out.get("MONTHLY", [])) or 0
-    out["FUNNEL"] = [
-        {"label": "Sessions", "value": sess_total, "sub": "GA4 · all markets", "icon": "Users"},
-        {"label": "Form Submits", "value": conv_total, "sub": "GA4 conversion events", "icon": "MousePointerClick"},
-        {"label": "Pardot Submissions", "value": inb.get("total_sub", 0), "sub": "Form Handler emails", "icon": "FileText"},
-        {"label": "Genuine Leads", "value": inb.get("genuine", 0), "sub": "external · non-spam", "icon": "Users"},
-        {"label": "MQLs", "value": inb.get("mqls", 0), "sub": "matched to SDR tracker", "icon": "Target"},
-        {"label": "Converted", "value": inb.get("converted", 0), "sub": "qualified / won", "icon": "CircleCheck"},
-    ]
+    if inbound_enabled:
+        out["FUNNEL"] = [
+            {"label": "Sessions", "value": sess_total, "sub": "GA4 · all markets", "icon": "Users"},
+            {"label": "Form Submits", "value": conv_total, "sub": "GA4 conversion events", "icon": "MousePointerClick"},
+            {"label": "Pardot Submissions", "value": inb.get("total_sub", 0), "sub": "Form Handler emails", "icon": "FileText"},
+            {"label": "Genuine Leads", "value": inb.get("genuine", 0), "sub": "external · non-spam", "icon": "Users"},
+            {"label": "MQLs", "value": inb.get("mqls", 0), "sub": "matched to SDR tracker", "icon": "Target"},
+            {"label": "Converted", "value": inb.get("converted", 0), "sub": "qualified / won", "icon": "CircleCheck"},
+        ]
+    else:
+        out["FUNNEL"] = [
+            {"label": "Sessions", "value": sess_total, "sub": "GA4 · all markets", "icon": "Users"},
+            {"label": "Form Submits", "value": conv_total, "sub": "GA4 conversion events", "icon": "MousePointerClick"},
+        ]
 
     # Velocity model inputs (region-keyed: All/USA/MENA/Europe/RoW) + conversion/leads
     vel = safe("velocity", lambda: velocity_section(client, mlabels))
     if vel:
         rm = out.get("REGION_MONTHLY", {})
         n_months = max(1, len(out.get("MONTHLY", [])) or 1)
-        leads_pm = round(inb.get("genuine", 0) / n_months, 1)
+        leads_pm = round(inb.get("genuine", 0) / n_months, 1) if inbound_enabled else 0
 
         def cr_for(scope):
             if scope == "All":
@@ -726,20 +748,40 @@ def run_all():
     return out
 
 
+def _store(section, payload):
+    with get_cursor(dict_rows=False) as cur:
+        cur.execute("""
+            INSERT INTO dashboard_cache (section, payload, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (section) DO UPDATE SET payload=EXCLUDED.payload, updated_at=NOW()
+        """, (section, json.dumps(payload)))
+
+
 def main():
     mark_sync("dashboard", "running")
+    client = get_client()
+    summary = []
     try:
-        payload = run_all()
-        with get_cursor(dict_rows=False) as cur:
-            cur.execute("""
-                INSERT INTO dashboard_cache (section, payload, updated_at)
-                VALUES ('all', %s, NOW())
-                ON CONFLICT (section) DO UPDATE SET payload=EXCLUDED.payload, updated_at=NOW()
-            """, (json.dumps(payload),))
-        n_err = len(payload.get("_errors", []))
-        msg = "dashboard complete" + (f" ({n_err} section errors)" if n_err else "")
-        mark_sync("dashboard", "ok", rows=1, message=msg)
-        print(msg, "| errors:", payload.get("_errors"))
+        for key, cfg in BRANDS.items():
+            set_brand(cfg["ga4"], cfg["gsc"])
+            try:
+                payload = run_all(client, inbound_enabled=cfg["inbound"])
+                payload["brand"] = key
+                payload["brand_label"] = cfg["label"]
+                payload["domain"] = cfg["domain"]
+                _store(f"all:{key}", payload)
+                if key == "tkxel":
+                    _store("all", payload)  # legacy default
+                summary.append(f"{key}({len(payload.get('_errors', []))}err)")
+            except Exception as e:  # noqa: BLE001
+                summary.append(f"{key}(FAILED)")
+                print(f"brand {key} failed:", e)
+                traceback.print_exc()
+        # brand registry for the frontend dropdown
+        _store("brands", {"brands": [{"key": k, "label": v["label"], "domain": v["domain"], "inbound": v["inbound"]} for k, v in BRANDS.items()]})
+        msg = "dashboard complete | " + ", ".join(summary)
+        mark_sync("dashboard", "ok", rows=len(BRANDS), message=msg)
+        print(msg)
     except Exception as e:  # noqa: BLE001
         mark_sync("dashboard", "error", message=str(e)[:200])
         traceback.print_exc()

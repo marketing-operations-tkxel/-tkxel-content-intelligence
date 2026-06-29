@@ -52,49 +52,6 @@ def health():
         return {"status": "degraded", "db": "down", "error": str(e)}
 
 
-@app.get("/api/_discover")
-def discover():
-    """Temporary: enumerate BigQuery datasets, GA4 properties (with their site
-    hostname), and GSC site_urls so we can map brands → datasets."""
-    import re
-    from workers.bq_client import get_client, PROJECT
-    client = get_client()
-    out = {"datasets": [], "ga4": [], "gsc": []}
-    dsids = [ds.dataset_id for ds in client.list_datasets(PROJECT)]
-    out["datasets"] = dsids
-    for dsid in dsids:
-        if dsid.startswith("analytics_"):
-            try:
-                tables = [t.table_id for t in client.list_tables(f"{PROJECT}.{dsid}")]
-                ev = sorted(t for t in tables if t.startswith("events_") and t[7:].isdigit())
-                latest = ev[-1] if ev else None
-                host = None
-                if latest:
-                    q = f"""SELECT (SELECT value.string_value FROM UNNEST(event_params) WHERE key='page_location') AS u
-                            FROM `{PROJECT}.{dsid}.{latest}` WHERE event_name='page_view' LIMIT 80"""
-                    hosts = {}
-                    for r in client.query(q).result():
-                        m = re.match(r'^https?://([^/]+)', r["u"] or "")
-                        if m:
-                            hosts[m.group(1)] = hosts.get(m.group(1), 0) + 1
-                    host = max(hosts, key=hosts.get) if hosts else None
-                out["ga4"].append({"dataset": dsid, "latest": latest, "host": host})
-            except Exception as e:  # noqa: BLE001
-                out["ga4"].append({"dataset": dsid, "error": str(e)[:120]})
-        if "search" in dsid.lower():
-            try:
-                tbls = [t.table_id for t in client.list_tables(f"{PROJECT}.{dsid}")]
-                sites = []
-                if any("site_impression" in t for t in tbls):
-                    tbl = next(t for t in tbls if "site_impression" in t)
-                    q = f"SELECT DISTINCT site_url FROM `{PROJECT}.{dsid}.{tbl}` LIMIT 50"
-                    sites = [r["site_url"] for r in client.query(q).result()]
-                out["gsc"].append({"dataset": dsid, "tables": tbls[:8], "sites": sites})
-            except Exception as e:  # noqa: BLE001
-                out["gsc"].append({"dataset": dsid, "error": str(e)[:120]})
-    return out
-
-
 @app.get("/api/status")
 def status():
     rows = _q("SELECT worker, last_run_at, last_ok_at, rows_written, status, message FROM sync_status")
@@ -122,10 +79,24 @@ def sync(background_tasks: BackgroundTasks):
     return {"status": "started", "workers": ["traffic", "inbound", "mql", "dashboard"]}
 
 
+@app.get("/api/v2/brands")
+def dashboard_brands():
+    """Brand list for the dropdown (key, label, domain, inbound flag)."""
+    rows = _q("SELECT payload FROM dashboard_cache WHERE section='brands'")
+    if rows:
+        return rows[0]["payload"]
+    return {"brands": [{"key": "tkxel", "label": "Tkxel", "domain": "tkxel.com", "inbound": True}]}
+
+
 @app.get("/api/v2/all")
-def dashboard_all():
-    """The full rich-dashboard payload, precomputed by sync_dashboard."""
-    rows = _q("SELECT payload, to_char(updated_at,'DD Mon YYYY, HH24:MI') AS updated FROM dashboard_cache WHERE section='all'")
+def dashboard_all(brand: str = Query("tkxel")):
+    """The full rich-dashboard payload for a brand, precomputed by sync_dashboard."""
+    rows = _q(
+        "SELECT payload, to_char(updated_at,'DD Mon YYYY, HH24:MI') AS updated FROM dashboard_cache WHERE section = %s",
+        (f"all:{brand}",),
+    )
+    if not rows:  # fall back to legacy default
+        rows = _q("SELECT payload, to_char(updated_at,'DD Mon YYYY, HH24:MI') AS updated FROM dashboard_cache WHERE section='all'")
     if not rows:
         return {"ready": False}
     payload = rows[0]["payload"]
