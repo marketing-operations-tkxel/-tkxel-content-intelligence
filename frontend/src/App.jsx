@@ -659,10 +659,12 @@ function Velocity({ region }) {
   const dLeadsCro = (B * 0.002); // +0.2pp CR illustrative
 
   // scenario presets — set all five levers at once
+  // Conservative = modest goal, lean on optimization. Aggressive = stretch goal,
+  // cautious that optimization delivers (lower capture) → content genuinely needed.
   const presets = {
-    Conservative: { targetPct: 12, optsPerMo: 4, capture: 15, artsPerMo: 3, a: V.a_median || 2.8 },
+    Conservative: { targetPct: 10, optsPerMo: 6, capture: 30, artsPerMo: 3, a: V.a_mean || 3.9 },
     Balanced: { targetPct: 20, optsPerMo: 6, capture: 25, artsPerMo: 5, a: V.a_mean || 3.9 },
-    Aggressive: { targetPct: 40, optsPerMo: 8, capture: 40, artsPerMo: 8, a: V.a_mean || 3.9 },
+    Aggressive: { targetPct: 45, optsPerMo: 6, capture: 20, artsPerMo: 8, a: V.a_mean || 3.9 },
   };
   const applyPreset = (k) => { const p = presets[k]; setTargetPct(p.targetPct); setOptsPerMo(p.optsPerMo); setCapture(p.capture); setArtsPerMo(p.artsPerMo); setA(p.a); };
   const activePreset = Object.keys(presets).find(k => {
