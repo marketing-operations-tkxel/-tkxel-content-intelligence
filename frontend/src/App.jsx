@@ -658,6 +658,27 @@ function Velocity({ region }) {
   const dLeadsTraffic = (dS * (V.conversion_rate || 0));
   const dLeadsCro = (B * 0.002); // +0.2pp CR illustrative
 
+  // scenario presets — set all five levers at once
+  const presets = {
+    Conservative: { targetPct: 12, optsPerMo: 4, capture: 15, artsPerMo: 3, a: V.a_median || 2.8 },
+    Balanced: { targetPct: 20, optsPerMo: 6, capture: 25, artsPerMo: 5, a: V.a_mean || 3.9 },
+    Aggressive: { targetPct: 40, optsPerMo: 8, capture: 40, artsPerMo: 8, a: V.a_mean || 3.9 },
+  };
+  const applyPreset = (k) => { const p = presets[k]; setTargetPct(p.targetPct); setOptsPerMo(p.optsPerMo); setCapture(p.capture); setArtsPerMo(p.artsPerMo); setA(p.a); };
+  const activePreset = Object.keys(presets).find(k => {
+    const p = presets[k];
+    return p.targetPct === targetPct && p.optsPerMo === optsPerMo && p.capture === capture && p.artsPerMo === artsPerMo && Math.abs(p.a - a) < 0.05;
+  }) || "Custom";
+  const PresetBtns = () => (
+    <div style={{ display: "flex", gap: 6 }}>
+      {["Conservative", "Balanced", "Aggressive"].map(k => {
+        const on = activePreset === k;
+        return <button key={k} onClick={() => applyPreset(k)} title={`+${presets[k].targetPct}% target · ${presets[k].optsPerMo} opt/mo · ${presets[k].capture}% capture`}
+          style={{ fontFamily: SANS, fontSize: 11, padding: "5px 10px", borderRadius: 6, border: `1px solid ${on ? C.sage : C.border}`, background: on ? C.sage : C.card, color: on ? "#fff" : C.muted, cursor: "pointer", fontWeight: on ? 600 : 500 }}>{k}</button>;
+      })}
+    </div>
+  );
+
   const Inp = ({ label, value, set, min, max, step = 1, suffix }) => (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       <span style={{ fontFamily: SANS, fontSize: 11, color: C.muted }}>{label}</span>
@@ -672,7 +693,8 @@ function Velocity({ region }) {
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontFamily: SANS, fontSize: 11, color: C.sage, border: `1px solid #CFE0D7`, background: C.sageSoft, borderRadius: 5, padding: "2px 7px" }}>{region === "All" ? "All regions" : region} · organic sessions · live GA4 + GSC</span>
-        <span style={{ fontFamily: SANS, fontSize: 11, color: C.faint }}>adjust the inputs — the required velocity recomputes live · leads are global (Pardot has no region)</span>
+        <span style={{ fontFamily: SANS, fontSize: 11, color: C.faint }}>pick a scenario or fine-tune the levers below — the required velocity recomputes live</span>
+        <div style={{ marginLeft: "auto" }}><PresetBtns /></div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
@@ -683,7 +705,7 @@ function Velocity({ region }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 16 }} className="grid-2">
-        <Card title="Model inputs" sub="your levers">
+        <Card title="Model inputs" sub={`scenario: ${activePreset}`} right={<PresetBtns />}>
           <div style={{ display: "grid", gap: 14, marginTop: 4 }}>
             <Inp label="Quarter target (QoQ %)" value={targetPct} set={setTargetPct} min={5} max={60} suffix="%" />
             <Inp label="Optimizations / month (O)" value={optsPerMo} set={setOptsPerMo} min={0} max={20} />
