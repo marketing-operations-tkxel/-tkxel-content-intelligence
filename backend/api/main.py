@@ -162,7 +162,18 @@ def page_queries(brand: str = Query("tkxel"), url: str = Query(...)):
         "query": r["query"], "impressions": int(r["impressions"] or 0), "clicks": int(r["clicks"] or 0),
         "ctr": round(float(r["ctr"] or 0), 2), "position": round(float(r["position"] or 0), 1),
     } for r in job.result()]
-    return {"url": url, "brand": brand, "queries": rows}
+    # best-effort: enrich with DataForSEO Keyword Difficulty (skipped if unfunded/unset)
+    kd_available = False
+    if os.environ.get("DATAFORSEO_LOGIN") and os.environ.get("DATAFORSEO_PASSWORD"):
+        try:
+            from workers.seo import keyword_difficulty_bulk
+            kds = keyword_difficulty_bulk([r["query"] for r in rows])
+            for r in rows:
+                r["kd"] = kds.get(r["query"])
+            kd_available = any(r.get("kd") is not None for r in rows)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"url": url, "brand": brand, "queries": rows, "kd_available": kd_available}
 
 
 @app.get("/api/v2/brands")

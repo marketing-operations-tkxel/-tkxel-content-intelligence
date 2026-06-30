@@ -90,6 +90,17 @@ def keyword_difficulty(keyword):
     return None
 
 
+def keyword_difficulty_bulk(keywords):
+    """{keyword: KD} for a list of keywords (one DataForSEO call). Best-effort."""
+    kws = [k for k in (keywords or []) if k][:700]
+    if not kws:
+        return {}
+    res = _dfs_post("dataforseo_labs/google/bulk_keyword_difficulty/live",
+                    {"keywords": kws, "location_code": USA_LOCATION, "language_code": LANG})
+    items = (res[0].get("items") if res else []) or []
+    return {it.get("keyword"): it.get("keyword_difficulty") for it in items}
+
+
 def search_volume(keyword):
     try:
         res = _dfs_post("dataforseo_labs/google/search_volume/live",

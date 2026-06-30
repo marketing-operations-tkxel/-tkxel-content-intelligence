@@ -191,7 +191,7 @@ const FullWindow = () => (
 );
 
 /* Live per-page GSC query breakdown + CTR diagnosis (modal). */
-function PageQueries({ brand, url, onClose }) {
+function PageQueries({ brand, url, onClose, onAnalyze }) {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState(null);
   useEffect(() => {
@@ -215,37 +215,45 @@ function PageQueries({ brand, url, onClose }) {
     else
       diag = { c: C.sage, b: C.sageSoft, t: `Decent positions with weak CTR — sharpen the <title> and meta description, add a year/number, and add FAQ schema to earn more SERP space.` };
   }
+  const kdAvail = rows && rows.some(q => q.kd != null);
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", zIndex: 50, display: "grid", placeItems: "center", padding: 20 }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 12, maxWidth: 780, width: "100%", maxHeight: "85vh", overflow: "auto", padding: 20, border: `1px solid ${C.border}`, boxShadow: "0 20px 60px rgba(0,0,0,.25)" }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 50, display: "grid", placeItems: "center", padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 12, maxWidth: 860, width: "100%", maxHeight: "85vh", overflow: "auto", border: `1px solid ${C.border}`, boxShadow: "0 20px 60px rgba(0,0,0,.3)" }}>
+        <div style={{ position: "sticky", top: 0, background: C.card, borderBottom: `1px solid ${C.border}`, padding: "15px 20px", display: "flex", alignItems: "baseline", gap: 10, zIndex: 3 }}>
           <div style={{ fontFamily: SANS, fontSize: 14, fontWeight: 700, color: C.text }}>Query breakdown</div>
           <div style={{ fontFamily: MONO, fontSize: 12, color: C.sage, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{url}</div>
-          <button onClick={onClose} style={{ marginLeft: "auto", border: "none", background: "transparent", fontSize: 20, cursor: "pointer", color: C.muted, lineHeight: 1 }}>×</button>
+          <button onClick={onClose} title="Close (or click outside)" style={{ marginLeft: "auto", border: `1px solid ${C.border}`, borderRadius: 7, background: C.card, fontSize: 13, cursor: "pointer", color: C.muted, padding: "4px 10px", fontFamily: SANS }}>✕ Close</button>
         </div>
-        {!rows && !err && <div style={{ padding: 30, textAlign: "center", color: C.muted, fontFamily: SANS, fontSize: 13 }}>Querying GSC live…</div>}
-        {err && <div style={{ padding: 20, color: C.rust, fontFamily: SANS }}>{err}</div>}
-        {diag && <div style={{ marginTop: 12, background: diag.b, border: `1px solid ${diag.c}33`, borderRadius: 8, padding: "11px 14px", fontFamily: SANS, fontSize: 12, color: diag.c, lineHeight: 1.55 }}>{diag.t}</div>}
-        {rows && rows.length > 0 && (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: SANS, fontSize: 12.5, marginTop: 12 }}>
-            <thead><tr style={{ color: C.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: .5 }}>
-              {["Query", "Impr.", "Clicks", "CTR", "Pos"].map((h, i) => <th key={h} style={{ padding: "7px 8px", textAlign: i ? "right" : "left", borderBottom: `1px solid ${C.border}` }}>{h}</th>)}
-            </tr></thead>
-            <tbody style={{ fontFamily: MONO }}>
-              {rows.map((q, i) => (
-                <tr key={i}>
-                  <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, fontFamily: SANS, maxWidth: 340, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.query}</td>
-                  <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: C.muted }}>{k(q.impressions)}</td>
-                  <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right" }}>{q.clicks}</td>
-                  <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: q.ctr < 0.5 ? C.rust : C.text }}>{q.ctr}%</td>
-                  <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: q.position < 4 ? C.sage : C.text }}>{q.position}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {rows && rows.length === 0 && <div style={{ padding: 20, color: C.muted, fontFamily: SANS, fontSize: 13 }}>No query-level data returned (GSC anonymizes low-volume queries).</div>}
-        <div style={{ fontFamily: SANS, fontSize: 10.5, color: C.faint, marginTop: 12 }}>Live from GSC · top 25 queries by impressions · full window. Click a row's page anywhere to inspect it.</div>
+        <div style={{ padding: 20 }}>
+          {!rows && !err && <div style={{ padding: 30, textAlign: "center", color: C.muted, fontFamily: SANS, fontSize: 13 }}>Querying GSC live…</div>}
+          {err && <div style={{ padding: 20, color: C.rust, fontFamily: SANS }}>{err}</div>}
+          {diag && <div style={{ background: diag.b, border: `1px solid ${diag.c}33`, borderRadius: 8, padding: "11px 14px", fontFamily: SANS, fontSize: 12, color: diag.c, lineHeight: 1.55 }}>{diag.t}</div>}
+          {rows && rows.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: SANS, fontSize: 12.5, marginTop: 12 }}>
+              <thead><tr style={{ color: C.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: .5 }}>
+                {["Query", "Impr.", "Clicks", "CTR", "Pos", "KD", ""].map((h, i) => <th key={i} style={{ padding: "7px 8px", textAlign: i === 0 || i === 6 ? "left" : "right", borderBottom: `1px solid ${C.border}`, position: "sticky", top: 50, background: C.card }}>{h}</th>)}
+              </tr></thead>
+              <tbody style={{ fontFamily: MONO }}>
+                {rows.map((q, i) => (
+                  <tr key={i}>
+                    <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, fontFamily: SANS, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.query}</td>
+                    <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: C.muted }}>{k(q.impressions)}</td>
+                    <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right" }}>{q.clicks}</td>
+                    <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: q.ctr < 0.5 ? C.rust : C.text }}>{q.ctr}%</td>
+                    <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: q.position < 4 ? C.sage : C.text }}>{q.position}</td>
+                    <td style={{ padding: "7px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: q.kd >= 50 ? C.rust : q.kd >= 20 ? C.ochre : C.sage }}>{q.kd == null ? "–" : q.kd}</td>
+                    <td style={{ padding: "5px 8px", borderBottom: `1px solid ${C.border}`, textAlign: "left" }}>
+                      {onAnalyze && <button onClick={() => { onAnalyze(q.query, url); onClose(); }} title="Full content gap + competitor backlinks for this keyword"
+                        style={{ fontFamily: SANS, fontSize: 11, padding: "3px 9px", borderRadius: 6, border: `1px solid ${C.sage}`, background: C.card, color: C.sage, cursor: "pointer", whiteSpace: "nowrap" }}>Analyze ↗</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {rows && rows.length === 0 && <div style={{ padding: 20, color: C.muted, fontFamily: SANS, fontSize: 13 }}>No query-level data returned (GSC anonymizes low-volume queries).</div>}
+          <div style={{ fontFamily: SANS, fontSize: 10.5, color: C.faint, marginTop: 12 }}>Live from GSC · top 25 queries by impressions · full window.{kdAvail ? " KD from DataForSEO." : " (KD shows once DataForSEO is funded.)"} “Analyze” runs the full content-gap + competitor-backlink report for that keyword.</div>
+        </div>
       </div>
     </div>
   );
@@ -520,7 +528,7 @@ function LLM({ llmMonthly, llmTotals, total, region, frac }) {
   );
 }
 
-function Opportunities({ region, frac, brand }) {
+function Opportunities({ region, frac, brand, onAnalyze }) {
   const [inspect, setInspect] = useState(null);
   const bucket = GAP_MONTHLY[region] || GAP_MONTHLY.All || {};
   const GAP = Object.entries(bucket).map(([url, arr]) => {
@@ -533,7 +541,7 @@ function Opportunities({ region, frac, brand }) {
   const maxS = Math.max(...GAP.map(g => g.score), 1);
   return (
     <Card title="Content gap & opportunities" sub={`GSC${region !== "All" ? ` · ${region}` : ""} · priority = impressions ÷ avg position · click a URL to see its queries`}>
-      {inspect && <PageQueries brand={brand} url={inspect} onClose={() => setInspect(null)} />}
+      {inspect && <PageQueries brand={brand} url={inspect} onClose={() => setInspect(null)} onAnalyze={onAnalyze} />}
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: SANS, fontSize: 12.5 }}>
           <thead><tr style={{ color: C.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: .5 }}>
@@ -682,7 +690,7 @@ function Inbound() {
   );
 }
 
-function Velocity({ region, brand }) {
+function Velocity({ region, brand, onAnalyze }) {
   const V = (VELOCITY && VELOCITY[region]) || (VELOCITY && VELOCITY.All) || {};
   const [inspect, setInspect] = useState(null);
   const [targetPct, setTargetPct] = useState(20);
@@ -757,7 +765,7 @@ function Velocity({ region, brand }) {
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      {inspect && <PageQueries brand={brand} url={inspect} onClose={() => setInspect(null)} />}
+      {inspect && <PageQueries brand={brand} url={inspect} onClose={() => setInspect(null)} onAnalyze={onAnalyze} />}
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontFamily: SANS, fontSize: 11, color: C.sage, border: `1px solid #CFE0D7`, background: C.sageSoft, borderRadius: 5, padding: "2px 7px" }}>{region === "All" ? "All regions" : region} · organic sessions · live GA4 + GSC</span>
         <span style={{ fontFamily: SANS, fontSize: 11, color: C.faint }}>pick a scenario or fine-tune the levers below — the required velocity recomputes live</span>
@@ -869,24 +877,29 @@ function Velocity({ region, brand }) {
   );
 }
 
-function KeywordResearch({ brand }) {
-  const [keyword, setKeyword] = useState("");
-  const [targetUrl, setTargetUrl] = useState("");
+function KeywordResearch({ brand, seed }) {
+  const [keyword, setKeyword] = useState(seed?.keyword || "");
+  const [targetUrl, setTargetUrl] = useState(seed?.url || "");
   const [jobId, setJobId] = useState(null);
   const [status, setStatus] = useState(null);
   const [result, setResult] = useState(null);
   const [msg, setMsg] = useState(null);
 
-  const analyze = async () => {
-    if (!keyword.trim()) return;
+  const analyze = async (kwOverride, urlOverride) => {
+    const kw = (kwOverride ?? keyword).trim();
+    const url = (urlOverride ?? targetUrl).trim();
+    if (!kw) return;
     setResult(null); setMsg(null); setStatus("running"); setJobId(null);
     try {
-      const r = await fetch(`${API}/api/seo/analyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ brand, keyword: keyword.trim(), target_url: targetUrl.trim() }) });
+      const r = await fetch(`${API}/api/seo/analyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ brand, keyword: kw, target_url: url }) });
       const d = await r.json();
       if (d.error) { setStatus("error"); setMsg(d.error); return; }
       setJobId(d.job_id);
     } catch (e) { setStatus("error"); setMsg(String(e)); }
   };
+
+  // auto-run when arriving from a "Analyze" click elsewhere
+  useEffect(() => { if (seed?.keyword) { setKeyword(seed.keyword); setTargetUrl(seed.url || ""); analyze(seed.keyword, seed.url); } }, [seed?.n]);  // eslint-disable-line
 
   useEffect(() => {
     if (!jobId) return;
@@ -1037,6 +1050,8 @@ export default function App() {
   const [region, setRegion] = useState("All");
   const [brand, setBrand] = useState("tkxel");
   const [brands, setBrands] = useState([]);
+  const [kwSeed, setKwSeed] = useState(null);
+  const goAnalyze = (keyword, url) => { setKwSeed({ keyword, url: url || "", n: Date.now() }); setTab("keyword"); };
   const [syncing, setSyncing] = useState(false);
   const [asOf, setAsOf] = useState("");
   const [fromDate, setFromDate] = useState(null);
@@ -1135,9 +1150,9 @@ export default function App() {
     overview: { monthly: D.monthly, viewsRegion: D.viewsRegion, totals: D.totals, range: rangeLabel, region, regions: D.regions, daily: D.daily },
     content: { region, frac: D.frac },
     top: { region, frac: D.frac },
-    gap: { region, frac: D.frac, brand },
-    keyword: { brand },
-    velocity: { region, brand },
+    gap: { region, frac: D.frac, brand, onAnalyze: goAnalyze },
+    keyword: { brand, seed: kwSeed },
+    velocity: { region, brand, onAnalyze: goAnalyze },
     llm: { llmMonthly: D.llmMonthly, llmTotals: D.llmTotals, total: D.llmTotal, region, frac: D.frac },
   };
   const TABS = { overview: Overview, content: Content, top: TopPages, llm: LLM, gap: Opportunities, keyword: KeywordResearch, velocity: Velocity, inbound: Inbound };
