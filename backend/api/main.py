@@ -79,6 +79,40 @@ def sync(background_tasks: BackgroundTasks):
     return {"status": "started", "workers": ["traffic", "inbound", "mql", "dashboard"]}
 
 
+@app.get("/api/v2/page-queries")
+def page_queries(brand: str = Query("tkxel"), url: str = Query(...)):
+    """Live GSC query breakdown for a single page (top queries by impressions,
+    each with its real position + CTR) — diagnoses why a page has low CTR."""
+    from google.cloud import bigquery
+    from workers.sync_dashboard import BRANDS
+    from workers.bq_client import get_client, PROJECT, WINDOW_START
+    cfg = BRANDS.get(brand)
+    if not cfg:
+        return {"error": "unknown brand", "queries": []}
+    gsc = cfg["gsc"]
+    client = get_client()
+    sql = f"""
+      SELECT query,
+        SUM(impressions) AS impressions, SUM(clicks) AS clicks,
+        SAFE_DIVIDE(SUM(clicks), SUM(impressions)) * 100 AS ctr,
+        SAFE_DIVIDE(SUM(sum_position), SUM(impressions)) + 1 AS position
+      FROM `{PROJECT}.{gsc}.searchdata_url_impression`
+      WHERE data_date >= '{WINDOW_START}'
+        AND REGEXP_REPLACE(REGEXP_REPLACE(url, r'^https?://[^/]+', ''), r'[?#].*$', '') = @path
+        AND query IS NOT NULL AND query != ''
+      GROUP BY query
+      ORDER BY impressions DESC
+      LIMIT 25
+    """
+    job = client.query(sql, job_config=bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("path", "STRING", url)]))
+    rows = [{
+        "query": r["query"], "impressions": int(r["impressions"] or 0), "clicks": int(r["clicks"] or 0),
+        "ctr": round(float(r["ctr"] or 0), 2), "position": round(float(r["position"] or 0), 1),
+    } for r in job.result()]
+    return {"url": url, "brand": brand, "queries": rows}
+
+
 @app.get("/api/v2/brands")
 def dashboard_brands():
     """Brand list for the dropdown (key, label, domain, inbound flag)."""
