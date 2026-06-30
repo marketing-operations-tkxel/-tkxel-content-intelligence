@@ -112,6 +112,16 @@ def seo_analyze(payload: dict, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "running"}
 
 
+@app.get("/api/seo/check")
+def seo_check():
+    """Diagnose DataForSEO credentials/access (HTTP status + account balance/limits)."""
+    try:
+        from workers.seo import account_check
+        return account_check()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)[:300]}
+
+
 @app.get("/api/seo/job")
 def seo_job(id: str = Query(...)):
     rows = _q("SELECT status, result, error, keyword, target_url FROM seo_jobs WHERE id = %s", (id,))

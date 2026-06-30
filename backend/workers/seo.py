@@ -23,8 +23,8 @@ UA = "Mozilla/5.0 (compatible; TkxelContentIntel/1.0; +https://tkxel.com)"
 
 
 def _dfs_auth():
-    login = os.environ.get("DATAFORSEO_LOGIN")
-    pw = os.environ.get("DATAFORSEO_PASSWORD")
+    login = (os.environ.get("DATAFORSEO_LOGIN") or "").strip()
+    pw = (os.environ.get("DATAFORSEO_PASSWORD") or "").strip()
     if not login or not pw:
         raise RuntimeError("DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD not set")
     return (login, pw)
@@ -33,12 +33,29 @@ def _dfs_auth():
 def _dfs_post(path, payload):
     r = requests.post(f"{DFS_BASE}/{path}", auth=_dfs_auth(),
                       json=payload if isinstance(payload, list) else [payload], timeout=60)
-    r.raise_for_status()
+    if r.status_code != 200:
+        raise RuntimeError(f"DataForSEO {path} → HTTP {r.status_code}: {(r.text or '')[:400]}")
     data = r.json()
+    if data.get("status_code") and data["status_code"] != 20000:
+        raise RuntimeError(f"DataForSEO {path}: [{data.get('status_code')}] {data.get('status_message')}")
     tasks = data.get("tasks") or []
     if not tasks:
         return []
+    if tasks[0].get("status_code") not in (20000, None):
+        raise RuntimeError(f"DataForSEO {path} task: [{tasks[0].get('status_code')}] {tasks[0].get('status_message')}")
     return tasks[0].get("result") or []
+
+
+def account_check():
+    """Diagnose DataForSEO access: returns HTTP status + account body (balance, limits, or error)."""
+    login, pw = _dfs_auth()
+    r = requests.get(f"{DFS_BASE}/appendix/user_data", auth=(login, pw), timeout=30)
+    out = {"http_status": r.status_code, "login_used": login[:3] + "***"}
+    try:
+        out["body"] = r.json()
+    except Exception:  # noqa: BLE001
+        out["body"] = (r.text or "")[:500]
+    return out
 
 
 # ───────────────────────── DataForSEO ─────────────────────────
