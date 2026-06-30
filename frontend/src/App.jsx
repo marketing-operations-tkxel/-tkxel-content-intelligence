@@ -204,7 +204,11 @@ function PageQueries({ brand, url, onClose }) {
   let diag = null;
   if (rows && rows.length) {
     const top = rows[0];
-    if (top.position < 4 && top.ctr < 1)
+    const totalImpr = rows.reduce((s, q) => s + q.impressions, 0);
+    const topShare = totalImpr ? top.impressions / totalImpr : 0;
+    if (topShare > 0.6 && top.position < 5 && top.ctr < 0.5)
+      diag = { c: C.rust, b: "#F6E5E0", t: `One query — "${top.query}" — is ${Math.round(topShare * 100)}% of this page's impressions (${k(top.impressions)}) at position ${top.position} with ${top.ctr}% CTR. A strong position with ~0 clicks on a head term means the SERP is locked by an AI Overview + authority sites and/or the query intent doesn't match this page. This volume is largely UNWINNABLE — don't chase it (the modeled uplift over-counts it). Instead optimize for the intent-matched queries lower in this list (the "vs"/comparison terms) and win the featured snippet there.` };
+    else if (top.position < 4 && top.ctr < 1)
       diag = { c: C.rust, b: "#F6E5E0", t: `Top query "${top.query}" ranks #${top.position} but only ${top.ctr}% CTR → a SERP feature (Featured Snippet / AI Overview) is almost certainly answering it on the results page. Win the snippet back: a crisp 40–55 word definition + a comparison table directly under the H1, and target the commercial-intent variants below.` };
     else if (top.position >= 8)
       diag = { c: C.ochre, b: "#F5ECDB", t: `The biggest query "${top.query}" actually ranks at #${top.position} — this is a ranking problem, not a CTR problem. Lever: deeper content, internal links from related posts/service pages, and a few backlinks.` };
