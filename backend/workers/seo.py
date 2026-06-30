@@ -14,7 +14,10 @@ import traceback
 
 import requests
 
-DFS_BASE = "https://api.dataforseo.com/v3"
+# Set DATAFORSEO_SANDBOX=true to use the free sandbox (canned data) for testing
+# the pipeline before funding the account; unset/false hits the live (paid) API.
+_SANDBOX = (os.environ.get("DATAFORSEO_SANDBOX", "") or "").strip().lower() in ("1", "true", "yes")
+DFS_BASE = "https://sandbox.dataforseo.com/v3" if _SANDBOX else "https://api.dataforseo.com/v3"
 USA_LOCATION = 2840          # DataForSEO location_code for United States
 LANG = "en"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
