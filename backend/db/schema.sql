@@ -129,6 +129,21 @@ CREATE TABLE IF NOT EXISTS dashboard_cache (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ---------------------------------------------------------------------------
+-- SEO keyword-research jobs (content gap + KD + competitor backlinks).
+-- Run async (external SERP/backlink APIs + LLM are slow); poll by id.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS seo_jobs (
+    id          TEXT PRIMARY KEY,
+    brand       TEXT,
+    keyword     TEXT,
+    target_url  TEXT,
+    status      TEXT DEFAULT 'running',   -- 'running' | 'done' | 'error'
+    result      JSONB,
+    error       TEXT,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_inbound_received ON inbound_leads (received_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_segment  ON inbound_leads (segment);
 CREATE INDEX IF NOT EXISTS idx_regional_month   ON regional_traffic (month);

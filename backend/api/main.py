@@ -3,6 +3,8 @@
 Sync workers populate the tables; this layer just serves them.
 """
 import os
+import json
+import uuid
 import subprocess
 import sys
 import pathlib
@@ -77,6 +79,46 @@ def sync(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(_run)
     return {"status": "started", "workers": ["traffic", "inbound", "mql", "dashboard"]}
+
+
+@app.post("/api/seo/analyze")
+def seo_analyze(payload: dict, background_tasks: BackgroundTasks):
+    """Start a keyword-research job (content gap + KD + competitor backlinks)."""
+    keyword = (payload.get("keyword") or "").strip()
+    if not keyword:
+        return {"error": "keyword is required"}
+    if not os.environ.get("DATAFORSEO_LOGIN") or not os.environ.get("DATAFORSEO_PASSWORD"):
+        return {"error": "DataForSEO credentials not set. Add DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD (and a real ANTHROPIC_API_KEY) on the tkxel-api service to enable Keyword Research."}
+    brand = payload.get("brand", "tkxel")
+    target_url = (payload.get("target_url") or "").strip()
+    job_id = uuid.uuid4().hex[:16]
+    with get_cursor(dict_rows=False) as cur:
+        cur.execute("INSERT INTO seo_jobs (id, brand, keyword, target_url, status) VALUES (%s,%s,%s,%s,'running')",
+                    (job_id, brand, keyword, target_url))
+
+    def _run():
+        from workers.seo import run_analysis
+        try:
+            res = run_analysis(brand, keyword, target_url)
+            with get_cursor(dict_rows=False) as cur:
+                cur.execute("UPDATE seo_jobs SET status='done', result=%s WHERE id=%s", (json.dumps(res), job_id))
+        except Exception as e:  # noqa: BLE001
+            import traceback as tb
+            tb.print_exc()
+            with get_cursor(dict_rows=False) as cur:
+                cur.execute("UPDATE seo_jobs SET status='error', error=%s WHERE id=%s", (str(e)[:300], job_id))
+
+    background_tasks.add_task(_run)
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/api/seo/job")
+def seo_job(id: str = Query(...)):
+    rows = _q("SELECT status, result, error, keyword, target_url FROM seo_jobs WHERE id = %s", (id,))
+    if not rows:
+        return {"status": "unknown"}
+    r = rows[0]
+    return {"status": r["status"], "result": r["result"], "error": r["error"], "keyword": r["keyword"], "target_url": r["target_url"]}
 
 
 @app.get("/api/v2/page-queries")

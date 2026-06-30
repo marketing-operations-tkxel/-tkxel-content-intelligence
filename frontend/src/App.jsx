@@ -869,6 +869,145 @@ function Velocity({ region, brand }) {
   );
 }
 
+function KeywordResearch({ brand }) {
+  const [keyword, setKeyword] = useState("");
+  const [targetUrl, setTargetUrl] = useState("");
+  const [jobId, setJobId] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [result, setResult] = useState(null);
+  const [msg, setMsg] = useState(null);
+
+  const analyze = async () => {
+    if (!keyword.trim()) return;
+    setResult(null); setMsg(null); setStatus("running"); setJobId(null);
+    try {
+      const r = await fetch(`${API}/api/seo/analyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ brand, keyword: keyword.trim(), target_url: targetUrl.trim() }) });
+      const d = await r.json();
+      if (d.error) { setStatus("error"); setMsg(d.error); return; }
+      setJobId(d.job_id);
+    } catch (e) { setStatus("error"); setMsg(String(e)); }
+  };
+
+  useEffect(() => {
+    if (!jobId) return;
+    let alive = true;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${API}/api/seo/job?id=${jobId}`);
+        const d = await r.json();
+        if (!alive) return;
+        if (d.status === "done") { setResult(d.result); setStatus("done"); }
+        else if (d.status === "error") { setStatus("error"); setMsg(d.error || "Analysis failed"); }
+        else setTimeout(poll, 3000);
+      } catch { if (alive) setTimeout(poll, 4000); }
+    };
+    poll();
+    return () => { alive = false; };
+  }, [jobId]);
+
+  const gap = result?.content_gap || {};
+  const GapList = ({ title, items, color = C.text }) => (!items || !items.length) ? null : (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontFamily: SANS, fontSize: 11.5, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: .5, marginBottom: 6 }}>{title}</div>
+      <ul style={{ margin: 0, paddingLeft: 18, fontFamily: SANS, fontSize: 12.5, color, lineHeight: 1.6 }}>
+        {items.map((x, i) => <li key={i}>{x}</li>)}
+      </ul>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <Card title="Keyword Research" sub="content gap + Keyword Difficulty + competitor backlinks · live SERP (USA) via DataForSEO + Claude">
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginTop: 4 }}>
+          <div style={{ flex: "2 1 260px", display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontFamily: SANS, fontSize: 11, color: C.muted }}>Target keyword</span>
+            <input value={keyword} onChange={e => setKeyword(e.target.value)} onKeyDown={e => e.key === "Enter" && analyze()} placeholder="e.g. containerization vs orchestration"
+              style={{ fontFamily: SANS, fontSize: 13, padding: "9px 11px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.text }} />
+          </div>
+          <div style={{ flex: "2 1 260px", display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontFamily: SANS, fontSize: 11, color: C.muted }}>Our page URL (optional)</span>
+            <input value={targetUrl} onChange={e => setTargetUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && analyze()} placeholder={`https://${DOMAIN}/blog/...`}
+              style={{ fontFamily: SANS, fontSize: 13, padding: "9px 11px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.text }} />
+          </div>
+          <button onClick={analyze} disabled={status === "running" || !keyword.trim()}
+            style={{ fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: "10px 18px", borderRadius: 8, border: "none", background: status === "running" ? C.sageSoft : C.sage, color: status === "running" ? C.sage : "#fff", cursor: status === "running" ? "default" : "pointer" }}>
+            {status === "running" ? "Analyzing…" : "Analyze"}
+          </button>
+        </div>
+        {status === "running" && <div style={{ fontFamily: SANS, fontSize: 12, color: C.muted, marginTop: 12 }}>Pulling the USA SERP → scraping the top 10 → Claude content-gap → competitor backlinks. ~30–60s…</div>}
+        {status === "error" && <div style={{ fontFamily: SANS, fontSize: 12.5, color: C.rust, marginTop: 12, background: "#F6E5E0", border: "1px solid #EAD2CB", borderRadius: 8, padding: "10px 13px", lineHeight: 1.5 }}>{msg}</div>}
+      </Card>
+
+      {result && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
+            <Kpi label="Keyword Difficulty" value={result.keyword_difficulty ?? "–"} fmt={x => x} accent={C.rust} Icon={Target} note="0–100 (Ahrefs-style)" />
+            <Kpi label="Search Volume" value={result.search_volume} accent={C.slate} Icon={Search} note="USA / mo" />
+            <Kpi label="Backlinks to compete" value={result.backlinks_needed_estimate} accent={C.ochre} Icon={Wrench} note="≈ median referring domains of top 10" />
+            <Kpi label="SERP analyzed" value={(result.serp || []).length} Icon={ListOrdered} note="top organic results" />
+          </div>
+
+          <Card title="Content gap" sub={`vs the top-ranking pages for "${result.keyword}"`}>
+            {gap._note ? <div style={{ fontFamily: SANS, fontSize: 12.5, color: C.ochre }}>{gap._note}</div> : (
+              <div>
+                {gap.summary && <div style={{ fontFamily: SANS, fontSize: 13, color: C.text, lineHeight: 1.6, background: C.sageSoft, border: "1px solid #CFE0D7", borderRadius: 8, padding: "11px 14px" }}>{gap.summary}</div>}
+                <GapList title="Priority actions" items={gap.priority_actions} color={C.sage} />
+                <GapList title="Missing topics / sections" items={gap.missing_topics} />
+                <GapList title="Missing entities" items={gap.missing_entities} />
+                <GapList title="Missing FAQs" items={gap.missing_faqs} />
+                <GapList title="Structure recommendations" items={gap.structure_recommendations} />
+              </div>
+            )}
+          </Card>
+
+          <Card title="SERP — top 10 (USA)" sub="who you're competing with, by backlink strength">
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: SANS, fontSize: 12.5 }}>
+                <thead><tr style={{ color: C.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: .5 }}>
+                  {["#", "Page", "Domain", "Ref. domains", "Backlinks"].map((h, i) => <th key={h} style={{ padding: "8px 9px", textAlign: i > 2 ? "right" : "left", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>)}
+                </tr></thead>
+                <tbody style={{ fontFamily: MONO }}>
+                  {(result.serp || []).map((s, i) => (
+                    <tr key={i}>
+                      <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, color: C.faint }}>{s.rank}</td>
+                      <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: SANS }}><a href={s.url} target="_blank" rel="noreferrer" style={{ color: C.sage, textDecoration: "none" }}>{s.title || s.url}</a></td>
+                      <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, color: C.muted }}>{s.domain}</td>
+                      <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right", fontWeight: 600 }}>{s.referring_domains == null ? "–" : nf(s.referring_domains)}</td>
+                      <td style={{ padding: "8px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: C.muted }}>{s.backlinks == null ? "–" : k(s.backlinks)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {(result.backlink_opportunities || []).map((o, i) => (
+            <Card key={i} title={`Backlink opportunities — ${o.domain}`} sub={`domains linking to a top competitor (${o.competitor}) — outreach targets`}>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: SANS, fontSize: 12.5 }}>
+                  <thead><tr style={{ color: C.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: .5 }}>
+                    {["Referring domain", "Domain rank", "Backlinks", "First seen"].map((h, j) => <th key={h} style={{ padding: "7px 9px", textAlign: j ? "right" : "left", borderBottom: `1px solid ${C.border}` }}>{h}</th>)}
+                  </tr></thead>
+                  <tbody style={{ fontFamily: MONO }}>
+                    {(o.referring_domains_list || []).map((d, j) => (
+                      <tr key={j}>
+                        <td style={{ padding: "7px 9px", borderBottom: `1px solid ${C.border}`, color: C.sage }}>{d.domain}</td>
+                        <td style={{ padding: "7px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right" }}>{d.rank ?? "–"}</td>
+                        <td style={{ padding: "7px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: C.muted }}>{d.backlinks == null ? "–" : nf(d.backlinks)}</td>
+                        <td style={{ padding: "7px 9px", borderBottom: `1px solid ${C.border}`, textAlign: "right", color: C.faint, fontFamily: SANS }}>{(d.first_seen || "").slice(0, 10)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ───────── app ───────── */
 const NAV = [
   { id: "overview", label: "Overview", Icon: LayoutDashboard },
@@ -876,6 +1015,7 @@ const NAV = [
   { id: "top", label: "Top Pages", Icon: ListOrdered },
   { id: "llm", label: "LLM Traffic", Icon: Sparkles },
   { id: "gap", label: "Opportunities", Icon: Target },
+  { id: "keyword", label: "Keyword Research", Icon: Search },
   { id: "velocity", label: "Velocity", Icon: Gauge },
   { id: "inbound", label: "Inbound Funnel", Icon: Users },
 ];
@@ -996,10 +1136,11 @@ export default function App() {
     content: { region, frac: D.frac },
     top: { region, frac: D.frac },
     gap: { region, frac: D.frac, brand },
+    keyword: { brand },
     velocity: { region, brand },
     llm: { llmMonthly: D.llmMonthly, llmTotals: D.llmTotals, total: D.llmTotal, region, frac: D.frac },
   };
-  const TABS = { overview: Overview, content: Content, top: TopPages, llm: LLM, gap: Opportunities, velocity: Velocity, inbound: Inbound };
+  const TABS = { overview: Overview, content: Content, top: TopPages, llm: LLM, gap: Opportunities, keyword: KeywordResearch, velocity: Velocity, inbound: Inbound };
   const Active = TABS[tab];
 
   return (
